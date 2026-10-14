@@ -470,6 +470,7 @@ use crate::terminal::model::session::{
 };
 use crate::terminal::model::terminal_model::{
     BlockIndex, BlockSelectionCardinality, SelectedBlocks, TerminalInputState, WithinModel,
+    directory_tab_title,
 };
 use crate::terminal::model::{ObfuscateSecrets, RespectObfuscatedSecrets, SecretHandle};
 use crate::terminal::model_events::{AnsiHandlerEvent, ModelEvent, ModelEventDispatcher};
@@ -4198,9 +4199,27 @@ impl TerminalView {
             me.handle_reporting_settings_event(evt, ctx);
         });
 
-        let initial_title = model.lock().shell_launch_state().display_name().to_string();
+        let initial_title = {
+            let model = model.lock();
+            model
+                .session_startup_path()
+                .as_deref()
+                .map(directory_tab_title)
+                .filter(|title| !title.is_empty())
+                .unwrap_or_else(|| {
+                    // No requested directory means the local shell starts in home.
+                    // A blank shell name is a remote session that has not reported a
+                    // directory yet.
+                    let shell_name = model.shell_launch_state().display_name();
+                    if shell_name.is_empty() {
+                        shell_name.to_owned()
+                    } else {
+                        "~".to_owned()
+                    }
+                })
+        };
 
-        let pane_configuration = ctx.add_model(|_| PaneConfiguration::new(initial_title));
+        let pane_configuration = ctx.add_model(|_| PaneConfiguration::new(initial_title.clone()));
 
         ctx.observe(
             &WindowActiveSession::handle(ctx),
@@ -4517,7 +4536,7 @@ impl TerminalView {
             block_completed_callbacks: Default::default(),
             conversation_completed_callbacks: Default::default(),
             current_repo_path: None,
-            terminal_title: Default::default(),
+            terminal_title: initial_title,
             ignore_next_set_title_event: false,
             cli_subagent_views: Default::default(),
             cli_subagent_controller,
@@ -14526,7 +14545,15 @@ impl TerminalView {
         // the title will default to the regular terminal title.
         self.update_pane_configuration(ctx);
 
-        self.ignore_next_set_title_event = true;
+        // The shell's next title is the working directory. Ignore it only when
+        // the pane is showing a conversation or agent title instead.
+        let pane_title = self.pane_configuration.as_ref(ctx).title().to_owned();
+        if tab_metadata::should_ignore_shell_title_after_bootstrap(
+            &pane_title,
+            &self.terminal_title,
+        ) {
+            self.ignore_next_set_title_event = true;
+        }
 
         let auth_state = AuthStateProvider::as_ref(ctx).get();
         let is_onboarded = auth_state.is_onboarded().unwrap_or(true);

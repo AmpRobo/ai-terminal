@@ -1,7 +1,7 @@
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
 use std::ops::{Range, RangeInclusive};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ai_terminal_completer::meta::Span;
@@ -2082,8 +2082,16 @@ impl TerminalModel {
             .spawned_with_shell_type(shell_type);
         self.event_proxy
             .send_app_event(Event::ShellSpawned(shell_type));
-        // Ensure the title is invalidated
-        self.set_title(None);
+        // The shell name is only a placeholder. This process starts in the
+        // session directory (home, when none was requested), and the shell's
+        // own title can replace this once the prompt is up.
+        let startup_title = self
+            .session_startup_path
+            .as_deref()
+            .map(directory_tab_title)
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| "~".to_owned());
+        self.set_title(Some(startup_title));
     }
 
     pub fn get_pending_session_info(&self) -> &Option<SessionInfo> {
@@ -3750,6 +3758,15 @@ impl ModeProvider for TerminalModel {
     fn is_term_mode_set(&self, mode: TermMode) -> bool {
         self.is_term_mode_set(mode)
     }
+}
+
+/// Tab label for a session directory. The session home is abbreviated to `~`.
+pub(crate) fn directory_tab_title(path: &Path) -> String {
+    let Some(path) = path.to_str().filter(|path| !path.is_empty()) else {
+        return String::new();
+    };
+    let home = dirs::home_dir().map(|home| home.to_string_lossy().into_owned());
+    ai_terminal_util::path::user_friendly_path(path, home.as_deref()).into_owned()
 }
 
 #[cfg(test)]

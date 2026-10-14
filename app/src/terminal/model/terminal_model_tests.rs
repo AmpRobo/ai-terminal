@@ -2396,6 +2396,89 @@ fn cloud_mode_setup_phase_ended_emits_when_sharing() {
 }
 
 #[test]
+fn directory_tab_title_abbreviates_home_and_keeps_other_paths() {
+    use std::path::Path;
+
+    assert_eq!(directory_tab_title(Path::new("")), "");
+
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    assert_eq!(directory_tab_title(&home), "~");
+
+    let child = home.join("src");
+    let title = directory_tab_title(&child);
+    assert!(title.starts_with('~'), "{title}");
+    assert!(title.ends_with("src"), "{title}");
+
+    let outside = Path::new("/var/tmp/ai-terminal-title");
+    assert_eq!(directory_tab_title(outside), "/var/tmp/ai-terminal-title");
+}
+
+#[test]
+fn login_shell_spawn_uses_the_startup_directory_as_the_tab_title() {
+    let (event_tx, event_rx) = async_channel::unbounded();
+    let event_proxy = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(event_tx)
+        .build();
+    let startup = std::path::PathBuf::from("/var/tmp/ai-terminal-session");
+    let mut terminal = TerminalModel::new_for_test(
+        block_size(),
+        color::List::from(&color::Colors::default()),
+        event_proxy,
+        Arc::new(Background::default()),
+        false,
+        None,
+        false,
+        false,
+        Some(startup.clone()),
+    );
+    while event_rx.try_recv().is_ok() {}
+
+    terminal.set_login_shell_spawned(ShellType::Bash);
+
+    let title = loop {
+        match event_rx.try_recv() {
+            Ok(Event::Title(title)) => break title,
+            Ok(_) => continue,
+            Err(_) => panic!("expected a title event"),
+        }
+    };
+    assert_eq!(title, directory_tab_title(&startup));
+}
+
+#[test]
+fn login_shell_spawn_without_a_startup_directory_uses_home() {
+    let (event_tx, event_rx) = async_channel::unbounded();
+    let event_proxy = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(event_tx)
+        .build();
+    let mut terminal = TerminalModel::new_for_test(
+        block_size(),
+        color::List::from(&color::Colors::default()),
+        event_proxy,
+        Arc::new(Background::default()),
+        false,
+        None,
+        false,
+        false,
+        None,
+    );
+    while event_rx.try_recv().is_ok() {}
+
+    terminal.set_login_shell_spawned(ShellType::Bash);
+
+    let title = loop {
+        match event_rx.try_recv() {
+            Ok(Event::Title(title)) => break title,
+            Ok(_) => continue,
+            Err(_) => panic!("expected a title event"),
+        }
+    };
+    assert_eq!(title, "~");
+}
+
+#[test]
 fn cloud_mode_setup_phase_ended_does_not_emit_when_not_sharing() {
     let mut terminal: TerminalModel = TerminalModel::mock(None, None);
     // No `set_shared_session_status(ActiveSharer)` here — the helper must

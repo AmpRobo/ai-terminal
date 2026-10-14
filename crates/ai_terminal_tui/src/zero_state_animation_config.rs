@@ -14,8 +14,8 @@ use ai_terminal_ui::SingletonEntity;
 use ai_terminal_ui_core::{AppContext, Entity};
 
 use super::{
-    ai_terminal_logo_contains, BUILT_IN_LOGO_CELL_ASPECT_RATIO, MAX_ASCII_ART_BYTES,
-    MAX_ASCII_ART_COLS, MAX_ASCII_ART_ROWS,
+    BUILT_IN_LOGO_CELL_ASPECT_RATIO, MAX_ASCII_ART_BYTES, MAX_ASCII_ART_COLS, MAX_ASCII_ART_ROWS,
+    ai_terminal_logo_contains,
 };
 
 #[derive(Clone, Debug)]

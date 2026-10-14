@@ -26,18 +26,18 @@ use instant::Instant;
 use tempfile::TempDir;
 
 use super::config::{
-    resolve_ascii_art_path, AsciiArtError, AsciiArtMask, ReloadObjectOutcome,
-    ZeroStateAnimationConfig, ZeroStateAnimationLoadFailure, ZeroStateShape,
+    AsciiArtError, AsciiArtMask, ReloadObjectOutcome, ZeroStateAnimationConfig,
+    ZeroStateAnimationLoadFailure, ZeroStateShape, resolve_ascii_art_path,
 };
 use super::{
-    ai_terminal_logo_contains, configured_idle_velocity, face_linger_angle, fitted_logo_size,
-    glyph_for_tangent, idle_angle, is_ghost_stipple_cell, logo_frame_at, object_frame_at,
-    object_frame_at_angle, object_frame_at_angle_with_background, object_frame_at_with_background,
-    rotation_angle, star_count_for_size, starfield_emitter_x, ActivePress, AiTerminalLogoStyles,
-    LogoCell, LogoGlyph, LogoProjector, LogoSurface, ZeroStateAnimationElement,
-    ZeroStateInteractionHandle, BUILT_IN_LOGO_CELL_ASPECT_RATIO, FLICK_RELEASE_VELOCITY_GAIN,
+    ActivePress, AiTerminalLogoStyles, BUILT_IN_LOGO_CELL_ASPECT_RATIO,
+    FLICK_RELEASE_VELOCITY_GAIN, LogoCell, LogoGlyph, LogoProjector, LogoSurface,
     MAX_INTERACTIVE_RADIANS_PER_SECOND, MIN_ANIMATION_COLS, MIN_ANIMATION_ROWS,
-    MOMENTUM_SETTLE_DURATION, REPAINT_INTERVAL,
+    MOMENTUM_SETTLE_DURATION, REPAINT_INTERVAL, ZeroStateAnimationElement,
+    ZeroStateInteractionHandle, ai_terminal_logo_contains, configured_idle_velocity,
+    face_linger_angle, fitted_logo_size, glyph_for_tangent, idle_angle, is_ghost_stipple_cell,
+    logo_frame_at, object_frame_at, object_frame_at_angle, object_frame_at_angle_with_background,
+    object_frame_at_with_background, rotation_angle, star_count_for_size, starfield_emitter_x,
 };
 
 const PANEL_SIZE: TuiSize = TuiSize::new(52, 20);
@@ -272,10 +272,12 @@ fn full_face_frame_is_recognizable_and_centered() {
         (90..220).contains(&occupied),
         "expected a sparse logo outline, got {occupied} cells"
     );
-    assert!(frame
-        .iter_cells()
-        .filter(|(_, _, cell)| cell.surface != LogoSurface::Background)
-        .all(|(_, y, _)| y > 0 && y < usize::from(PANEL_SIZE.height) - 1));
+    assert!(
+        frame
+            .iter_cells()
+            .filter(|(_, _, cell)| cell.surface != LogoSurface::Background)
+            .all(|(_, y, _)| y > 0 && y < usize::from(PANEL_SIZE.height) - 1)
+    );
     assert!(lines.iter().any(|line| line.contains("------")));
     assert!(lines.iter().any(|line| line.contains('.')));
     assert!(lines.iter().all(|line| !line.contains(['█', '▓', '▒'])));
@@ -354,9 +356,10 @@ fn quarter_turn_is_narrower_and_exposes_the_side() {
     let edge = logo_frame_at(Duration::from_millis(1250), PANEL_SIZE).unwrap();
 
     assert!(edge.iter_cells().count() < face.iter_cells().count());
-    assert!(edge
-        .iter_cells()
-        .any(|(_, _, cell)| cell.surface == LogoSurface::Side));
+    assert!(
+        edge.iter_cells()
+            .any(|(_, _, cell)| cell.surface == LogoSurface::Side)
+    );
     assert_ne!(face.to_lines(), edge.to_lines());
 }
 
@@ -364,12 +367,16 @@ fn quarter_turn_is_narrower_and_exposes_the_side() {
 fn half_turn_exposes_the_back_face() {
     let frame = logo_frame_at(Duration::from_millis(2500), PANEL_SIZE).unwrap();
 
-    assert!(frame
-        .iter_cells()
-        .all(|(_, _, cell)| cell.surface != LogoSurface::Front));
-    assert!(frame
-        .iter_cells()
-        .any(|(_, _, cell)| cell.surface == LogoSurface::Back));
+    assert!(
+        frame
+            .iter_cells()
+            .all(|(_, _, cell)| cell.surface != LogoSurface::Front)
+    );
+    assert!(
+        frame
+            .iter_cells()
+            .any(|(_, _, cell)| cell.surface == LogoSurface::Back)
+    );
 }
 
 #[test]
@@ -1542,12 +1549,14 @@ fn hidden_or_too_small_animation_has_no_drag_target() {
     let interaction = ZeroStateInteractionHandle::default();
     interaction.set_visible(false);
     assert!(!interaction.press_at(TuiPoint::new(1, 1), Instant::now()));
-    assert!(object_frame_at(
-        Duration::ZERO,
-        TuiSize::new(MIN_ANIMATION_COLS - 1, MIN_ANIMATION_ROWS),
-        &ZeroStateAnimationConfig::default(),
-    )
-    .is_none());
+    assert!(
+        object_frame_at(
+            Duration::ZERO,
+            TuiSize::new(MIN_ANIMATION_COLS - 1, MIN_ANIMATION_ROWS),
+            &ZeroStateAnimationConfig::default(),
+        )
+        .is_none()
+    );
 }
 
 #[test]
@@ -1568,12 +1577,14 @@ fn representative_ascii_shapes_rotate_through_front_side_and_back() {
                 .any(|(_, _, cell)| cell.surface == LogoSurface::Side),
             "{name} should retain visible side stitches at a quarter turn"
         );
-        assert!(back
-            .iter_cells()
-            .all(|(_, _, cell)| cell.surface != LogoSurface::Front));
-        assert!(back
-            .iter_cells()
-            .any(|(_, _, cell)| cell.surface == LogoSurface::Back));
+        assert!(
+            back.iter_cells()
+                .all(|(_, _, cell)| cell.surface != LogoSurface::Front)
+        );
+        assert!(
+            back.iter_cells()
+                .any(|(_, _, cell)| cell.surface == LogoSurface::Back)
+        );
         assert_ne!(logo_cells(&face), logo_cells(&edge));
     }
 }
@@ -1649,11 +1660,13 @@ fn custom_animation_element_paints_and_requests_another_frame() {
             )
         });
 
-        assert!(frame
-            .buffer
-            .to_lines()
-            .iter()
-            .any(|line| line.chars().any(|character| character != ' ')));
+        assert!(
+            frame
+                .buffer
+                .to_lines()
+                .iter()
+                .any(|line| line.chars().any(|character| character != ' '))
+        );
         assert!(frame.repaint_at.is_some());
     });
 }

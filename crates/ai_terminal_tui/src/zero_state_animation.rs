@@ -10,12 +10,12 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use ai_terminal_ui_core::AppContext;
 use ai_terminal_ui_core::elements::animation::AnimationClock;
 use ai_terminal_ui_core::elements::tui::{
     TuiConstraint, TuiElement, TuiEvent, TuiEventContext, TuiLayoutContext, TuiPaintContext,
     TuiPaintSurface, TuiPoint, TuiScreenPoint, TuiScreenPosition, TuiSize, TuiStyle,
 };
-use ai_terminal_ui_core::AppContext;
 use instant::Instant;
 
 #[path = "zero_state_animation_config.rs"]
@@ -1609,11 +1609,7 @@ fn glyph_for_tangent(tangent_x: f64, tangent_y: f64) -> Option<LogoGlyph> {
 }
 
 fn bool_as_scalar(value: bool) -> f64 {
-    if value {
-        1.0
-    } else {
-        0.0
-    }
+    if value { 1.0 } else { 0.0 }
 }
 
 fn ai_terminal_logo_contains(x: f64, y: f64) -> bool {

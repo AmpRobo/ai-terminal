@@ -4,6 +4,19 @@ use crate::context_chips::display_chip::GitLineChanges;
 use crate::context_chips::{ContextChipKind, git_line_changes_from_chips};
 use crate::terminal::TerminalView;
 
+/// The shell emits its idle title (the working directory) immediately after
+/// bootstrap. Keep that update when the pane is still showing the terminal's
+/// own title. Drop it only when bootstrap just installed a different
+/// conversation or agent title.
+pub(super) fn should_ignore_shell_title_after_bootstrap(
+    pane_title: &str,
+    current_terminal_title: &str,
+) -> bool {
+    let showing_terminal_title = pane_title == current_terminal_title
+        || (current_terminal_title.is_empty() && pane_title.is_empty());
+    !showing_terminal_title
+}
+
 impl TerminalView {
     fn prompt_chip_value(&self, chip_kind: &ContextChipKind, ctx: &AppContext) -> Option<String> {
         self.current_prompt
@@ -99,3 +112,7 @@ impl TerminalView {
             })
     }
 }
+
+#[cfg(test)]
+#[path = "tab_metadata_tests.rs"]
+mod tests;
