@@ -1,0 +1,25 @@
+[package]
+name = "syntax_tree"
+version = "0.1.0"
+edition = "2024"
+authors = ["AI Terminal Team <dev@ai-terminal.invalid>"]
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+rangemap.workspace = true
+arborium.workspace = true
+ai_terminal_ui_core.workspace = true
+ai_terminal_editor.workspace = true
+languages.workspace = true
+futures.workspace = true
+futures-lite.workspace = true
+parking_lot.workspace = true
+log.workspace = true
+string-offset.workspace = true
+streaming-iterator = "0.1.9"
+ai_terminal_util.workspace = true
+
+[dev-dependencies]
+ai_terminal_editor = { workspace = true, features = ["test-util"] }
+ai_terminal_ui = { workspace = true, features = ["test-util"] }

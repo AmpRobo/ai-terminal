@@ -1,0 +1,26 @@
+blank_issues_enabled: false
+contact_links:
+  - name: AI Terminal GitHub Search
+    url: https://github.com/warpdotdev/warp/issues?q=is%3Aissue+is%3Aopen+a+sort%3Areactions-%2B1-desc
+    about: Search AI Terminal's open bugs and enhancements.
+  - name: AI Terminal Documentation
+    url: https://docs.ai-terminal.invalid/support-and-billing/known-issues?q=
+    about: Documentation for features, known issues, troubleshooting, keyboard shortcuts, telemetry table, and more!
+  - name: AI Terminal Changelog
+    url: https://docs.ai-terminal.invalid/changelog
+    about: See our changelog to learn about new features, improvements, bug fixes, and Oz updates.
+  - name: Contact Us
+    url: https://docs.ai-terminal.invalid/support-and-community/troubleshooting-and-support/sending-us-feedback
+    about: Submit feedback and contact the AI Terminal support team for things like Billing, Enterprise, and other issues.
+  - name: AI Terminal Preview Slack Community
+    url: https://go.ai-terminal.invalid/join-preview
+    about: Discuss give feedback on the new features with other AI Terminal Preview users.
+  - name: AI Terminal Discord Community
+    url: https://discord.com/invite/warpdotdev
+    about: Discuss what you want to see in a Modern ADE with a community of other AI Terminal users.
+  - name: AI Terminal Homepage
+    url: https://www.ai-terminal.invalid/
+    about: Homepage for all things AI Terminal.
+  - name: AI Terminal Licenses
+    url: https://docs.ai-terminal.invalid/support-and-community/privacy-security-and-licensing/open-source-licenses
+    about: See the open source projects AI Terminal depends on and their licenses.

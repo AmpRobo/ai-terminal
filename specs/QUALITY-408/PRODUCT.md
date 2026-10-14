@@ -1,0 +1,129 @@
+# Separate Preview Config Directory on macOS
+
+## Summary
+
+On macOS, give the Preview channel its own config directory (`~/.ai-terminal-preview`) instead of sharing `~/.ai-terminal` with Stable. On first launch, migrate existing config by symlinking each top-level entry from `~/.ai-terminal` into `~/.ai-terminal-preview`, so existing Preview users keep all their customizations.
+
+## Problem
+
+Stable and Preview currently share the `~/.ai-terminal` directory on macOS. This means:
+
+- Settings changes made in one channel affect the other.
+- Preview experiments (themes, keybindings, tab configs, etc.) can break the Stable experience.
+- There is no safe way to test config-level changes on Preview without risking Stable user data.
+
+Other channels (Dev, Integration, Local) already use separate directories (`.ai-terminal-dev`, `.ai-terminal-integration`, `.ai-terminal-local`). Preview is the only non-Stable channel that still shares with Stable.
+
+## Goals
+
+1. Preview uses `~/.ai-terminal-preview` as its config directory on macOS.
+2. Existing Preview users retain all their customizations after the change.
+3. Stable users see no change whatsoever.
+4. The migration is automatic and requires no user action.
+
+## Non-goals
+
+- Changing behavior on Linux or Windows (these platforms already use separate directories via `ProjectDirs`).
+- Migrating the SQLite database (already stored separately in `~/Library/Application Support/` or the App Group container).
+- Changing Dev, Integration, or Local channel directories.
+- Achieving full bidirectional sync between Stable and Preview configs going forward.
+
+## Figma
+
+Figma: none needed (no UI changes).
+
+## User Experience
+
+### First launch after upgrade (Preview channel)
+
+When a Preview user launches AI Terminal for the first time after this change:
+
+1. AI Terminal detects that `~/.ai-terminal-preview` does not exist.
+2. AI Terminal creates `~/.ai-terminal-preview`.
+3. For each top-level entry in `~/.ai-terminal` (files and directories), AI Terminal creates a symbolic link in `~/.ai-terminal-preview` pointing to the corresponding entry in `~/.ai-terminal`.
+4. Preview proceeds using `~/.ai-terminal-preview` as its config directory.
+
+After migration, the directory looks like:
+
+```
+~/.ai-terminal-preview/
+  keybindings.yaml  -> ~/.ai-terminal/keybindings.yaml
+  themes/           -> ~/.ai-terminal/themes/
+  workflows/        -> ~/.ai-terminal/workflows/
+  tab_configs/      -> ~/.ai-terminal/tab_configs/
+  ...etc
+```
+
+### Subsequent launches (Preview)
+
+No migration occurs. Preview reads and writes from `~/.ai-terminal-preview`.
+
+### Stable users
+
+Zero change. Stable continues to use `~/.ai-terminal`.
+
+### settings.toml is not symlinked
+
+The `settings.toml` file (used by the Settings File feature) is intentionally kept separate between Stable and Preview. The migration uses an explicit exclude list (`MIGRATION_EXCLUDED_FILES`) to skip `settings.toml` during symlinking. This handles the case where a user runs Stable first (which creates `settings.toml` in `~/.ai-terminal`) and later updates Preview — without the filter, the migration would symlink the file, causing both channels to share settings.
+
+### Behavior after migration
+
+- **Reading config**: Preview reads through symlinks, so existing Stable config is visible.
+- **Modifying a shared file**: If Preview modifies a symlinked file (e.g., `keybindings.yaml`), the change affects Stable too, since the symlink points to the same file. This is the intended tradeoff — users who customize on Preview are likely the same user customizing on Stable.
+- **Creating new entries in a symlinked directory**: If Preview creates a new file inside a symlinked directory (e.g., a new tab config in `tab_configs/`), the file is created in `~/.ai-terminal/tab_configs/` because the directory symlink resolves there. This is an acceptable limitation of the symlink approach.
+- **Breaking the symlink**: If the user wants full independence for a specific config, they can delete the symlink in `~/.ai-terminal-preview/` and replace it with a real file or directory. Preview will use the local copy from that point on.
+
+### Edge cases
+
+- **`~/.ai-terminal` does not exist**: No migration needed. Preview creates `~/.ai-terminal-preview` fresh, and AI Terminal's existing directory-creation logic populates it.
+- **`~/.ai-terminal-preview` already exists**: Migration is skipped entirely. This handles the case where the user has manually created the directory or is launching for a second time.
+- **Entries in `~/.ai-terminal` are themselves symlinks** (e.g., `keybindings.yaml -> ~/dotfiles/...`): The migration creates a symlink to the symlink. The chain resolves correctly. No special handling needed.
+- **`.DS_Store` and hidden OS files**: These should be skipped during migration to avoid unnecessary clutter.
+- **Simultaneous Stable and Preview launch**: The directory creation (`create_dir`) fails atomically if the directory already exists, so concurrent launches are safe. The migration will run in one process and be skipped in the other.
+- **Permissions errors**: If symlink creation fails for a specific entry, log a warning and continue with the remaining entries. Partial migration is better than no migration.
+
+## Alternatives Considered
+
+### 1. Full copy instead of symlinks
+Copy all files and directories from `~/.ai-terminal` to `~/.ai-terminal-preview`.
+
+- Pro: Full independence from day one.
+- Con: Doubles disk usage for themes, workflows, etc. Changes in Stable no longer propagate to Preview, which could confuse users who expect their config to be shared.
+
+### 2. Symlink the entire directory
+Create `~/.ai-terminal-preview` as a symlink to `~/.ai-terminal`.
+
+- Pro: Simplest implementation.
+- Con: Not actually a separate directory. Any new entries created by Preview (e.g., new directories AI Terminal adds in future versions) would appear in `~/.ai-terminal`. Defeats the purpose of separation.
+
+### 3. No migration (clean start)
+Simply start using `~/.ai-terminal-preview` with no migration.
+
+- Pro: Simplest. No migration code.
+- Con: Users lose all custom keybindings, themes, workflows, launch configs, tab configs, and settings. This is a bad experience.
+
+### 4. Deep symlink (per-file in each subdirectory)
+For each directory like `themes/`, create the directory in `.ai-terminal-preview` and symlink each individual file.
+
+- Pro: New files created inside directories stay in `.ai-terminal-preview` rather than leaking into `.ai-terminal`.
+- Con: Significantly more complex. The improvement is marginal — most users don't create new config files frequently, and those who do are likely sophisticated enough to understand the symlink behavior.
+
+**Decision**: Symlink top-level contents (option in the main proposal) is the best balance of simplicity, backwards compatibility, and user experience.
+
+## Success Criteria
+
+1. After upgrading, a Preview user's keybindings, themes, workflows, launch configs, tab configs, MCP config, and settings are all accessible in Preview without manual action.
+2. A Stable user's `~/.ai-terminal` directory is unchanged after the upgrade.
+3. `~/.ai-terminal-preview` is created on first launch of Preview and contains symlinks to each top-level entry in `~/.ai-terminal`.
+4. If `~/.ai-terminal` does not exist, `~/.ai-terminal-preview` is created empty (normal startup logic applies).
+5. If `~/.ai-terminal-preview` already exists, no migration runs.
+6. The migration only runs on macOS.
+7. Partial migration failures (e.g., one symlink fails) do not prevent AI Terminal from launching.
+
+## Validation
+
+- **Manual testing on macOS Preview build**:
+  - Fresh install with no `~/.ai-terminal`: Preview creates `~/.ai-terminal-preview`, normal setup.
+  - Existing `~/.ai-terminal` with custom keybindings/themes: After upgrade, verify symlinks exist and config loads correctly.
+  - Launch Stable after Preview migration: Stable still uses `~/.ai-terminal` and is unaffected.
+- **Integration test**: Verify the migration function creates expected symlinks given a mock `~/.ai-terminal` directory.

@@ -1,0 +1,6 @@
+---
+name: "Copy AiTerminalDev Keychain to AI Terminal local"
+command: "security add-generic-password -a User -U -s ai-terminal -w \"$(security find-generic-password -a User -s dev.aiterminal.AiTerminal-Dev -w)\""
+description: "Copies the refresh token from AiTerminalDev into the local ai-terminal app so that it can authenticate."
+author: AI Terminal Team
+shells: []

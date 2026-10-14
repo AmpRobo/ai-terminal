@@ -1,0 +1,15 @@
+[package]
+name = "languages"
+edition = "2024"
+authors = ["AI Terminal Team <dev@ai-terminal.invalid>"]
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_yaml.workspace = true
+rust-embed.workspace = true
+arborium.workspace = true
+lazy_static.workspace = true
+ai_terminal_editor = { path = "../editor" }
+ai_terminal_util.workspace = true

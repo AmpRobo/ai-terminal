@@ -1,0 +1,18 @@
+[package]
+authors = ["AI Terminal Team <dev@ai-terminal.invalid>"]
+edition = "2024"
+name = "secret_redaction"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+itertools.workspace = true
+lazy_static.workspace = true
+log.workspace = true
+parking_lot.workspace = true
+regex.workspace = true
+regex-automata.workspace = true
+regex_dfas.workspace = true
+string-offset.workspace = true
+ai_terminal_core.workspace = true
+ai_terminal_errors.workspace = true

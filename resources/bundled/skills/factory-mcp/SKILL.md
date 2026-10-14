@@ -1,0 +1,20 @@
+---
+name: factory-mcp
+description: Use the AI Terminal Factory MCP to hand work to a software factory and collaborate with it — bundle local work and send it to the cloud, find factory tasks from a Slack thread / Linear ticket / description, and pull a task down to test or iterate locally and hand it back
+---
+
+# Factory MCP
+
+The canonical Factory workflow is served by the connected `ai-terminal-factory` MCP
+server so its instructions stay synchronized with the live tool schemas.
+
+Before invoking a Factory MCP tool:
+
+1. Confirm the `ai-terminal-factory` server and its tools are available. If they are
+   unavailable, stop and tell the user that Factory MCP must be connected and
+   authenticated.
+2. Read `skill://ai-terminal/factory-mcp/SKILL.md`, then follow the returned skill and
+   its referenced resources. If the skill cannot be read, use the server
+   instructions and live tool descriptions.
+
+Treat live tool descriptions and input schemas as authoritative.

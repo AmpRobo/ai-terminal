@@ -1,0 +1,168 @@
+#!/bin/bash
+#
+# macOS-specific implementation of `./script/run`. Runs a local version of
+# AI Terminal as a real 'app' instead of a bare executable, so macOS can treat it
+# like a real signed app (custom URL schemes, user notifications, etc.).
+#
+# This script is invoked by `./script/run`, which handles cross-platform
+# setup (install_channel_config, binary name detection, feature-to-env-var
+# mapping). The following env vars are expected to be set by the caller:
+#   AI_TERMINAL_BIN_NAME  — "ai-terminal" (internal local build) or "ai-terminal-oss"
+#   AI_TERMINAL_CHANNEL   — "local" or "oss"
+#   FEATURES       — comma-separated cargo features (already normalized)
+# Must be called from the root directory of the ai-terminal repo.
+
+set -e
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"/../.. && pwd)"
+cd "${REPO_ROOT}"
+
+: "${AI_TERMINAL_BIN_NAME:?AI_TERMINAL_BIN_NAME must be set (invoke via ./script/run)}"
+: "${AI_TERMINAL_CHANNEL:?AI_TERMINAL_CHANNEL must be set (invoke via ./script/run)}"
+: "${FEATURES:?FEATURES must be set (invoke via ./script/run)}"
+
+# Resolve Cargo's actual target directory rather than assuming ./target. This
+# honors a shared CARGO_TARGET_DIR / build.target-dir (e.g. set in
+# ~/.cargo/config.toml), which is where `cargo bundle` writes the .app bundle.
+TARGET_DIR="$(cargo metadata --no-deps --format-version 1 | jq -r .target_directory)"
+if [ -z "$TARGET_DIR" ] || [ "$TARGET_DIR" = "null" ]; then
+    TARGET_DIR="${REPO_ROOT}/target"
+fi
+
+if [ "$AI_TERMINAL_CHANNEL" = "local" ]; then
+    AI_TERMINAL_APP_PATH="${TARGET_DIR}/debug/bundle/osx/AiTerminalLocal.app"
+    AI_TERMINAL_SCHEME_NAME="aiterminallocal"
+else
+    AI_TERMINAL_APP_PATH="${TARGET_DIR}/debug/bundle/osx/AI Terminal.app"
+    AI_TERMINAL_SCHEME_NAME="aiterminaloss"
+fi
+DONT_OPEN=false
+# Launches the binary with "open", meaning the AI Terminal process is
+# launched by the MacOS application launcher instead of a shell session.
+# Note that since AI Terminal isn't launched as a child process, using ctrl+c
+# won't kill the app (but will kill the tail process displaying output).
+# tl;dr better simulates running AI Terminal Dev/Stable
+OPEN_WITH_LAUNCHD=false
+
+# Arguments to pass directly AI Terminal (specified after --)
+# This is not supported when opening with launchd, as passing CLI arguments to
+# an application doesn't make sense.
+AI_TERMINAL_ARGS=()
+
+# Export this variable so it can be referenced by app/build.rs later when
+# running `cargo bundle`.
+export FRAMEWORK_OVERRIDE="dev"
+
+PARAMS=""
+while (( "$#" )); do
+  case "$1" in
+    --)
+      shift
+      AI_TERMINAL_ARGS=("$@")
+      break
+      ;;
+    --dont-open)
+      DONT_OPEN=true
+      shift
+      ;;
+    --release)
+      echo "Detected release build, pointing at release bundle under ${TARGET_DIR}/release/bundle"
+      if [ "$AI_TERMINAL_CHANNEL" = "local" ]; then
+          AI_TERMINAL_APP_PATH="${TARGET_DIR}/release/bundle/osx/AiTerminalLocal.app"
+      else
+          AI_TERMINAL_APP_PATH="${TARGET_DIR}/release/bundle/osx/AI Terminal.app"
+      fi
+      PARAMS="$PARAMS $1"
+      shift
+      ;;
+    --profile)
+      PROFILE="$2"
+      shift 2
+      if [ "$AI_TERMINAL_CHANNEL" = "local" ]; then
+          AI_TERMINAL_APP_PATH="${TARGET_DIR}/${PROFILE}/bundle/osx/AiTerminalLocal.app"
+      else
+          AI_TERMINAL_APP_PATH="${TARGET_DIR}/${PROFILE}/bundle/osx/AI Terminal.app"
+      fi
+      PARAMS="$PARAMS --profile $PROFILE"
+      ;;
+    --open_with_launchd)
+      OPEN_WITH_LAUNCHD=true
+      shift
+      ;;
+    --generate-schema)
+      GENERATE_SCHEMA=true
+      shift
+      ;;
+    *) # preserve positional arguments
+      PARAMS="$PARAMS $1"
+      shift
+      ;;
+  esac
+done
+
+rm -rf "$AI_TERMINAL_APP_PATH"
+
+pushd app > /dev/null
+echo "Bundling app (bin: $AI_TERMINAL_BIN_NAME)..."
+cargo bundle --bin "$AI_TERMINAL_BIN_NAME" --features "$FEATURES" $PARAMS
+echo "Successfully bundled..."
+popd > /dev/null
+
+if [[ ",$FEATURES," =~ ",cocoa_sentry," ]]; then
+  echo "Copying Sentry framework into app bundle..."
+  SENTRY_FRAMEWORK="app/frameworks/dev/Sentry-Dynamic-WithARM64e.xcframework/macos-arm64_arm64e_x86_64/Sentry.framework"
+  mkdir -p "$AI_TERMINAL_APP_PATH/Contents/Frameworks"
+  cp -a "$SENTRY_FRAMEWORK" "$AI_TERMINAL_APP_PATH/Contents/Frameworks/"
+fi
+"${REPO_ROOT}/script/macos/add_framework_rpath" "$AI_TERMINAL_APP_PATH/Contents/MacOS/$AI_TERMINAL_BIN_NAME"
+
+export AI_TERMINAL_SCHEME_NAME
+export AI_TERMINAL_PLIST_PATH="$AI_TERMINAL_APP_PATH/Contents/Info.plist"
+./script/update_plist
+
+echo "Preparing bundled resources..."
+if [ "${GENERATE_SCHEMA:-false}" != "true" ]; then
+  export SKIP_SETTINGS_SCHEMA=1
+else
+  export SETTINGS_SCHEMA_EXECUTABLE="$AI_TERMINAL_APP_PATH/Contents/MacOS/$AI_TERMINAL_BIN_NAME"
+fi
+NO_LICENSES=1 "${REPO_ROOT}/script/prepare_bundled_resources" "$AI_TERMINAL_APP_PATH/Contents/Resources" "$AI_TERMINAL_CHANNEL"
+
+"${REPO_ROOT}/script/compile_icon" "$AI_TERMINAL_CHANNEL" "$AI_TERMINAL_APP_PATH"
+
+if [[ ",$FEATURES," =~ ",heap_usage_tracking," ]]; then
+  echo "Bundling pprof..."
+  HELPERS_DIR="$AI_TERMINAL_APP_PATH/Contents/Helpers"
+  "${REPO_ROOT}/script/prepare_bundled_pprof" "$HELPERS_DIR"
+fi
+
+if [[ ",$FEATURES," =~ ",ai_terminal_control_cli," ]]; then
+  AI_TERMINALCTRL_SCRIPT_PATH="$AI_TERMINAL_APP_PATH/Contents/Resources/bin/ai_terminal_ctrl-$AI_TERMINAL_CHANNEL"
+  echo "Creating ai_terminal_ctrl wrapper script at $AI_TERMINALCTRL_SCRIPT_PATH..."
+  "${REPO_ROOT}/script/macos/create_ai_terminal_ctrl_wrapper" \
+    "$AI_TERMINALCTRL_SCRIPT_PATH" \
+    "../../MacOS/$AI_TERMINAL_BIN_NAME"
+fi
+
+echo "Codesigning app..."
+SIGNING_CERT="$(security find-identity -p codesigning -v | grep "Apple Development" | awk '{print $2}' | head -1)"
+codesign --force --deep --options runtime --sign "${SIGNING_CERT:--}" "$AI_TERMINAL_APP_PATH" --entitlements script/Debug-Entitlements.plist
+
+if [ "$DONT_OPEN" = false ] ; then
+    if  [ "$OPEN_WITH_LAUNCHD" = true ]; then
+        echo "Launching with MacOS application launcher"
+        PATH="" /usr/bin/open "$AI_TERMINAL_APP_PATH"
+        if [ "$AI_TERMINAL_CHANNEL" = "local" ]; then
+            LOG_FILE=~/Library/Logs/ai_terminal_local.log
+        elif [ "$AI_TERMINAL_CHANNEL" = "oss" ]; then
+            LOG_FILE=~/Library/Logs/ai-terminal-oss.log
+        else
+            echo "Warning: unrecognized AI_TERMINAL_CHANNEL '$AI_TERMINAL_CHANNEL', defaulting to OSS log path" >&2
+            LOG_FILE=~/Library/Logs/ai-terminal-oss.log
+        fi
+        tail -F "$LOG_FILE"
+    else
+        echo "Opening app at $AI_TERMINAL_APP_PATH/Contents/MacOS/$AI_TERMINAL_BIN_NAME"
+        "$AI_TERMINAL_APP_PATH/Contents/MacOS/$AI_TERMINAL_BIN_NAME" "${AI_TERMINAL_ARGS[@]}"
+    fi
+fi

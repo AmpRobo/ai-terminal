@@ -1,0 +1,1 @@
+ALTER TABLE folders ADD COLUMN is_ai_terminal_pack BOOLEAN NOT NULL DEFAULT FALSE;
