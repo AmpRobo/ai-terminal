@@ -21,6 +21,14 @@ fn factory_deferred_repositories_are_dogfood_only_by_default() {
 }
 
 #[test]
+fn local_qwen_code_agent_is_local_only_by_default() {
+    assert!(LOCAL_FLAGS.contains(&FeatureFlag::LocalQwenCodeAgent));
+    assert!(!DOGFOOD_FLAGS.contains(&FeatureFlag::LocalQwenCodeAgent));
+    assert!(!PREVIEW_FLAGS.contains(&FeatureFlag::LocalQwenCodeAgent));
+    assert!(!RELEASE_FLAGS.contains(&FeatureFlag::LocalQwenCodeAgent));
+}
+
+#[test]
 fn local_child_harnesses_are_local_only_by_default() {
     assert!(LOCAL_FLAGS.contains(&FeatureFlag::LocalClaudeCodexChildHarnesses));
     assert!(!DEBUG_FLAGS.contains(&FeatureFlag::LocalClaudeCodexChildHarnesses));

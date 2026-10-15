@@ -26,6 +26,8 @@ use ai_terminal_ui::r#async::{SpawnedFutureHandle, Timer};
 use ai_terminal_ui::{
     AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity, WeakViewHandle,
 };
+#[cfg(not(target_family = "wasm"))]
+use ai_terminal_util::path::{EscapeChar, ShellFamily};
 use anyhow::anyhow;
 use chrono::{DateTime, Local};
 use input_context::{input_context_for_request, parse_context_attachments};
@@ -62,6 +64,10 @@ use crate::ai::agent::{
 use crate::ai::agent_events::AgentMessageEventMetadata;
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::agent_sdk::ClaudeHarness;
+#[cfg(not(target_family = "wasm"))]
+use crate::ai::agent_sdk::driver::harness::acp::{
+    LocalQwenLaunch, LocalQwenSession, LocalQwenTurn,
+};
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::document::ai_document_model::{
     AIDocumentId, AIDocumentModel, AIDocumentUserEditStatus,
@@ -387,6 +393,10 @@ pub struct BlocklistAIController {
             Option<PassiveSuggestionTrigger>,
         )>,
     >,
+    /// Local `qwen --acp` sessions, one per conversation, used when
+    /// [`FeatureFlag::LocalQwenCodeAgent`] is enabled.
+    #[cfg(not(target_family = "wasm"))]
+    local_qwen_sessions: HashMap<AIConversationId, LocalQwenSession>,
 }
 
 enum InputQueryType {
@@ -733,7 +743,131 @@ impl BlocklistAIController {
             pending_passive_follow_ups: HashSet::new(),
             commands_interrupted_for_injection: HashMap::new(),
             pending_passive_suggestion_results: HashMap::new(),
+            #[cfg(not(target_family = "wasm"))]
+            local_qwen_sessions: HashMap::new(),
         }
+    }
+
+    /// Routes a typed agent-mode prompt to the local Qwen Code process.
+    ///
+    /// Returns `true` when the prompt stays on this machine. Remote sessions and non-user
+    /// inputs keep the existing request path.
+    #[cfg(not(target_family = "wasm"))]
+    fn route_user_query_to_local_qwen(
+        &mut self,
+        query: &str,
+        input: &InputQueryType,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        if !FeatureFlag::LocalQwenCodeAgent.is_enabled() {
+            return false;
+        }
+        if self
+            .terminal_model
+            .lock()
+            .shared_session_status()
+            .is_viewer()
+        {
+            return false;
+        }
+        if matches!(
+            self.active_session.as_ref(ctx).session_type(ctx),
+            Some(SessionType::AiTerminalifiedRemote { .. })
+        ) {
+            return false;
+        }
+        let InputQueryType::UserSubmittedQueryFromInput { .. } = input else {
+            return false;
+        };
+        let (query, _) = extract_user_query_mode(query.to_owned());
+        let query = query.trim().to_owned();
+        if query.is_empty() {
+            return false;
+        }
+        let cwd = self
+            .active_session
+            .as_ref(ctx)
+            .current_working_directory()
+            .cloned()
+            .filter(|dir| !dir.is_empty())
+            .or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .map(|path| path.display().to_string())
+            });
+        let Some(cwd) = cwd else {
+            self.fail_local_qwen(
+                conversation_id,
+                "No local working directory for Qwen Code.",
+                ctx,
+            );
+            return true;
+        };
+        let escape_char = self
+            .active_session
+            .as_ref(ctx)
+            .shell_type(ctx)
+            .map(|shell| ShellFamily::from(shell).escape_char())
+            .unwrap_or(EscapeChar::Backslash);
+        let turn = LocalQwenTurn {
+            text: query,
+            cwd: PathBuf::from(cwd),
+        };
+        if let Some(session) = self.local_qwen_sessions.get(&conversation_id)
+            && session.submit(turn.clone()).is_ok()
+        {
+            return true;
+        }
+        self.local_qwen_sessions.remove(&conversation_id);
+        let session = LocalQwenSession::open(
+            ctx.spawner(),
+            ctx.background_executor(),
+            LocalQwenLaunch {
+                conversation_id,
+                terminal_surface_id: self.terminal_surface_id,
+                escape_char,
+            },
+        );
+        if session.submit(turn).is_err() {
+            log::warn!("Local Qwen Code session closed before the prompt was sent");
+            return true;
+        }
+        self.local_qwen_sessions.insert(conversation_id, session);
+        true
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn fail_local_qwen(
+        &mut self,
+        conversation_id: AIConversationId,
+        message: &str,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Ok(turn) = self.begin_external_harness_turn(conversation_id, None, ctx) else {
+            log::warn!("Could not open a Qwen Code turn");
+            return;
+        };
+        self.apply_external_harness_event(
+            &turn.stream_id,
+            ai_terminal_multi_agent_api::ResponseEvent {
+                r#type: Some(
+                    ai_terminal_multi_agent_api::response_event::Type::Finished(
+                        ai_terminal_multi_agent_api::response_event::StreamFinished {
+                            reason: Some(
+                                ai_terminal_multi_agent_api::response_event::stream_finished::Reason::InternalError(
+                                    ai_terminal_multi_agent_api::response_event::stream_finished::InternalError {
+                                        message: message.to_owned(),
+                                    },
+                                ),
+                            ),
+                            ..Default::default()
+                        },
+                    ),
+                ),
+            },
+            ctx,
+        );
     }
 
     /// Internal method to send a query to the AI model. External callers should use either
@@ -804,6 +938,16 @@ impl BlocklistAIController {
                 conversation_id_override,
                 ctx,
             );
+            return;
+        }
+
+        #[cfg(not(target_family = "wasm"))]
+        if self.route_user_query_to_local_qwen(
+            &query,
+            &input_query.input_query,
+            conversation_id,
+            ctx,
+        ) {
             return;
         }
 
@@ -3304,6 +3448,11 @@ impl BlocklistAIController {
         // concurrent background session in another conversation is left intact; idempotent and a
         // no-op when this conversation has no active background session.
         computer_use::end_background_session(&conversation_id.to_string());
+
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(session) = self.local_qwen_sessions.get(&conversation_id) {
+            session.cancel();
+        }
 
         // Cancel any pending auto-resume for this conversation.
         if let Some(handle) = self.pending_auto_resume_handles.remove(&conversation_id) {

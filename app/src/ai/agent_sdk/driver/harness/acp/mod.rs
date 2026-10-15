@@ -19,6 +19,8 @@ mod attachments;
 mod bridge;
 mod connection;
 mod launch;
+#[cfg(not(target_family = "wasm"))]
+mod local_gui;
 mod mapping;
 mod policy;
 mod protocol;
@@ -44,6 +46,8 @@ use async_trait::async_trait;
 pub(crate) use bridge::run_bridge;
 use futures::{FutureExt, future, pin_mut, select};
 pub(crate) use launch::AcpLaunchSpec;
+#[cfg(not(target_family = "wasm"))]
+pub(crate) use local_gui::{LocalQwenLaunch, LocalQwenSession, LocalQwenTurn};
 use parking_lot::Mutex;
 use serde_json::Value;
 use uuid::Uuid;

@@ -770,6 +770,10 @@ pub enum FeatureFlag {
     /// session.
     AcpHarness,
 
+    /// GUI agent mode sends user prompts to a local `qwen --acp` process. This client only
+    /// reads and writes files and runs local shell commands; it does not call a model itself.
+    LocalQwenCodeAgent,
+
     /// Enables workspace- and block-snapshot handoff between cloud agent runs
     /// and the local AI Terminal client.
     /// When enabled:
@@ -1024,6 +1028,7 @@ pub const DEBUG_FLAGS: &[FeatureFlag] = &[FeatureFlag::DebugMode, FeatureFlag::R
 pub const LOCAL_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::LocalClaudeCodexChildHarnesses,
     FeatureFlag::AcpHarness,
+    FeatureFlag::LocalQwenCodeAgent,
 ];
 
 /// Features enabled for the development team.  The expectation is that, over
