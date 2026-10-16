@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+#
+# Build the Linux GUI .deb and AppImage.
+#
+# Defaults to the oss channel, which does not need the private
+# ai-terminal-channel-config binary. See how_to_build.md.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+CHANNEL="oss"
+PACKAGES="appimage,deb"
+RELEASE_TAG="${GIT_RELEASE_TAG:-v0.1.0}"
+INSTALL_SYSTEM_DEPS=false
+DEBUG=false
+SKIP_BUILD=false
+BUILD_ARCH="$(uname -m)"
+EXTRA=()
+
+usage() {
+  cat <<'EOF'
+Usage: ./script/build_linux_packages [options]
+
+Build the Linux GUI .deb and AppImage. Default channel is oss.
+
+Options:
+  --channel CHANNEL     oss (default), local, dev, preview, or stable
+  --packages LIST       Comma-separated appimage and/or deb (default: appimage,deb)
+  --release-tag TAG     GIT_RELEASE_TAG used for the .deb version (default: v0.1.0)
+  --debug               Cargo dev profile instead of release-lto
+  --skip-build          Package an existing binary
+  --arch ARCH           x86_64 or aarch64
+  --features FEATURES   Extra Cargo features, appended to the channel set
+  --install-system-deps Install apt build and packaging packages (uses sudo)
+  -h, --help            Show this help
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --install-system-deps)
+      INSTALL_SYSTEM_DEPS=true
+      shift
+      ;;
+    --debug)
+      DEBUG=true
+      EXTRA+=("--debug")
+      shift
+      ;;
+    --skip-build)
+      SKIP_BUILD=true
+      EXTRA+=("--skip-build")
+      shift
+      ;;
+    -c|--channel)
+      CHANNEL="$2"
+      shift 2
+      ;;
+    --packages)
+      PACKAGES="$2"
+      shift 2
+      ;;
+    --release-tag)
+      RELEASE_TAG="$2"
+      shift 2
+      ;;
+    --features)
+      EXTRA+=("--features" "$2")
+      shift 2
+      ;;
+    --arch)
+      BUILD_ARCH="$2"
+      EXTRA+=("--arch" "$2")
+      shift 2
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+case "$CHANNEL" in
+  oss|local|dev|preview|stable) ;;
+  *)
+    echo "Unsupported channel: $CHANNEL" >&2
+    exit 1
+    ;;
+esac
+
+case "$PACKAGES" in
+  *appimage*|*deb*) ;;
+  *)
+    echo "--packages must include appimage, deb, or both" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "This script only builds Linux packages (current OS: $(uname -s))." >&2
+  exit 1
+fi
+
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+
+if [[ "$INSTALL_SYSTEM_DEPS" == true ]]; then
+  "$ROOT/script/linux/install_build_deps"
+  # shellcheck disable=SC1091
+  . "$ROOT/script/ai_terminal_sudo"
+  ai_terminal_sudo apt-get install -y fakeroot patchelf desktop-file-utils
+fi
+
+if [[ "$PACKAGES" == *appimage* ]]; then
+  "$ROOT/script/linux/install_linuxdeploy"
+  if [[ ! -e /dev/fuse && -z "${APPIMAGE_EXTRACT_AND_RUN:-}" ]]; then
+    export APPIMAGE_EXTRACT_AND_RUN=1
+  fi
+fi
+
+if ! command -v cargo-about >/dev/null 2>&1 || [[ "$(cargo-about --version 2>/dev/null || true)" != "cargo-about 0.8.4" ]]; then
+  "$ROOT/script/install_cargo_release_deps" --no-build-deps
+fi
+
+missing=()
+for cmd in cargo rustc cmake pkg-config python3 protoc fakeroot dpkg-deb; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    missing+=("$cmd")
+  fi
+done
+if [[ "$PACKAGES" == *appimage* ]]; then
+  for cmd in linuxdeploy patchelf desktop-file-validate; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      missing+=("$cmd")
+    fi
+  done
+fi
+if ((${#missing[@]})); then
+  echo "Missing required tools: ${missing[*]}" >&2
+  echo "Install system packages with: ./script/build_linux_packages --install-system-deps" >&2
+  echo "See how_to_build.md for the package list." >&2
+  exit 1
+fi
+
+if [[ "$SKIP_BUILD" != true && "$CHANNEL" != "oss" ]] && ! command -v ai-terminal-channel-config >/dev/null 2>&1; then
+  echo "Channel '$CHANNEL' needs ai-terminal-channel-config on PATH." >&2
+  echo "Run ./script/install_channel_config, or build with --channel oss." >&2
+  exit 1
+fi
+
+if [[ "$SKIP_BUILD" == true && -z "${SETTINGS_SCHEMA_SOURCE:-}" && -z "${SETTINGS_SCHEMA_EXECUTABLE:-}" ]]; then
+  if [[ "$DEBUG" == true ]]; then
+    profile="debug"
+  elif [[ "$CHANNEL" == "local" || "$CHANNEL" == "dev" ]]; then
+    profile="release-lto-debug_assertions"
+  else
+    profile="release-lto"
+  fi
+  schema="$CARGO_TARGET_DIR/$profile/settings_schema.json"
+  if [[ -f "$schema" ]]; then
+    export SETTINGS_SCHEMA_SOURCE="$schema"
+  fi
+fi
+
+"$ROOT/script/bundle" \
+  --channel "$CHANNEL" \
+  --packages "$PACKAGES" \
+  --release-tag "$RELEASE_TAG" \
+  "${EXTRA[@]}"
