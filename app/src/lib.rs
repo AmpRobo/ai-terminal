@@ -318,6 +318,7 @@ use crate::tab::TabShortcutModifierState;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::resizable_data::ResizableData;
+use crate::terminal::ssh::password_autofill::SavedSshPasswords;
 use crate::terminal::view::inline_banner::ByoLlmAuthBannerSessionState;
 use crate::terminal::{AudibleBell, CustomSecretRegexUpdater, History};
 #[cfg(feature = "tui")]
@@ -1817,6 +1818,7 @@ pub(crate) fn initialize_app(
         }
         manager
     });
+    ctx.add_singleton_model(|_| SavedSshPasswords::default());
 
     ctx.subscribe_to_model(&UserWorkspaces::handle(ctx), |_, event, ctx| {
         if matches!(

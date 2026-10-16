@@ -7,7 +7,11 @@ use http_client::StatusCode;
 use remote_server::setup::RemotePlatform;
 use remote_server::transport::Error;
 
-const REMOTE_SERVER_TARBALL_CACHE_FILE_NAME: &str = "oz.tar.gz";
+const REMOTE_SERVER_TARBALL_FILE_NAME: &str = "oz.tar.gz";
+
+/// Directory in the client's bundled resources holding remote-server tarballs built alongside the
+/// client, laid out like the tarball cache (`{os}-{arch}/oz.tar.gz`).
+const BUNDLED_TARBALLS_DIR_NAME: &str = "remote-server";
 
 const REMOTE_SERVER_TARBALL_DOWNLOAD_ATTEMPTS: usize = 3;
 // The local SCP fallback download can run over slow or captive networks. Match
@@ -25,15 +29,16 @@ pub(super) fn should_try_install(error: &Error) -> bool {
     !matches!(error, Error::ScriptFailed { exit_code, .. } if *exit_code == 2)
 }
 
-/// Installs the remote server via SCP fallback.
+/// Installs the remote server via SCP upload.
 ///
-/// The tarball is downloaded or reused from the local cache first, then uploaded
-/// to the remote host and passed to the install script as an already-downloaded
-/// archive. This avoids requiring the remote host to download the tarball itself.
+/// The tarball comes from the client's bundled resources or the local cache (downloading it
+/// first if needed), then is uploaded to the remote host and passed to the install script as an
+/// already-downloaded archive. This avoids requiring the remote host to download the tarball
+/// itself.
 pub(super) async fn install(socket_path: &Path) -> Result<(), Error> {
     let platform = super::super::detect_remote_platform(socket_path).await?;
 
-    let client_tarball_path = cached_remote_server_tarball(&platform)
+    let client_tarball_path = local_remote_server_tarball(&platform)
         .await
         .map_err(Error::Other)?;
     let timeout = remote_server::setup::SCP_INSTALL_TIMEOUT;
@@ -102,30 +107,65 @@ fn current_remote_server_tarball_cache_version() -> &'static str {
     remote_server::setup::remote_server_artifact_version()
 }
 
-fn remote_server_tarball_cache_path(platform: &RemotePlatform) -> PathBuf {
-    remote_server_tarball_cache_root()
-        .join(current_remote_server_tarball_cache_version())
-        .join(format!(
-            "{}-{}",
-            platform.os.as_str(),
-            platform.arch.as_str()
-        ))
-        .join(REMOTE_SERVER_TARBALL_CACHE_FILE_NAME)
+fn platform_tarball_path(dir: &Path, platform: &RemotePlatform) -> PathBuf {
+    dir.join(format!(
+        "{}-{}",
+        platform.os.as_str(),
+        platform.arch.as_str()
+    ))
+    .join(REMOTE_SERVER_TARBALL_FILE_NAME)
 }
 
-async fn is_valid_cached_tarball(path: &Path) -> bool {
+fn remote_server_tarball_cache_path(platform: &RemotePlatform) -> PathBuf {
+    platform_tarball_path(
+        &remote_server_tarball_cache_root().join(current_remote_server_tarball_cache_version()),
+        platform,
+    )
+}
+
+async fn is_valid_tarball(path: &Path) -> bool {
     async_fs::metadata(path)
         .await
         .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
 }
 
+/// Returns the directory of remote-server tarballs bundled with this client, if it ships any.
+async fn bundled_tarballs_dir() -> Option<PathBuf> {
+    let dir = ai_terminal_core::paths::bundled_resources_dir()?.join(BUNDLED_TARBALLS_DIR_NAME);
+    async_fs::metadata(&dir)
+        .await
+        .is_ok_and(|metadata| metadata.is_dir())
+        .then_some(dir)
+}
+
+/// Returns whether this client ships its own remote-server tarballs.
+pub(super) async fn has_bundled_tarballs() -> bool {
+    bundled_tarballs_dir().await.is_some()
+}
+
+/// Returns the tarball in `bundled_dir` for the remote platform, if there is one.
+async fn bundled_tarball(bundled_dir: &Path, platform: &RemotePlatform) -> Option<PathBuf> {
+    let path = platform_tarball_path(bundled_dir, platform);
+    is_valid_tarball(&path).await.then_some(path)
+}
+
 /// Returns a local tarball for the remote platform.
 ///
-/// Reuses an existing cached tarball when available; otherwise downloads the
-/// tarball into the cache and returns the newly cached path.
-async fn cached_remote_server_tarball(platform: &RemotePlatform) -> anyhow::Result<PathBuf> {
+/// Prefers a tarball bundled with this client, then an existing cached tarball; otherwise
+/// downloads the tarball into the cache and returns the newly cached path.
+async fn local_remote_server_tarball(platform: &RemotePlatform) -> anyhow::Result<PathBuf> {
+    if let Some(bundled_dir) = bundled_tarballs_dir().await
+        && let Some(bundled_path) = bundled_tarball(&bundled_dir, platform).await
+    {
+        log::info!(
+            "Using bundled remote-server tarball at {}",
+            bundled_path.display()
+        );
+        return Ok(bundled_path);
+    }
+
     let cache_path = remote_server_tarball_cache_path(platform);
-    if is_valid_cached_tarball(&cache_path).await {
+    if is_valid_tarball(&cache_path).await {
         log::info!(
             "Using cached remote-server tarball at {}",
             cache_path.display()
@@ -170,7 +210,7 @@ async fn download_remote_server_tarball_to_cache(
     // Download into a unique temp path first so a failed or partial download
     // never appears at the shared cache path that other installs may reuse.
     let temp_path = temp_dir.join(format!(
-        ".{REMOTE_SERVER_TARBALL_CACHE_FILE_NAME}.{}.tmp",
+        ".{REMOTE_SERVER_TARBALL_FILE_NAME}.{}.tmp",
         uuid::Uuid::new_v4()
     ));
 
@@ -178,12 +218,12 @@ async fn download_remote_server_tarball_to_cache(
         let _ = async_fs::remove_file(&temp_path).await;
         return Err(e);
     }
-    if !is_valid_cached_tarball(&temp_path).await {
+    if !is_valid_tarball(&temp_path).await {
         let _ = async_fs::remove_file(&temp_path).await;
         anyhow::bail!("Downloaded remote-server tarball from {url} was empty");
     }
 
-    if is_valid_cached_tarball(cache_path).await {
+    if is_valid_tarball(cache_path).await {
         let _ = async_fs::remove_file(&temp_path).await;
         return Ok(());
     }
@@ -193,7 +233,7 @@ async fn download_remote_server_tarball_to_cache(
     // cache hit is good enough for this install, so discard our temp file.
     match async_fs::rename(&temp_path, cache_path).await {
         Ok(()) => Ok(()),
-        Err(_e) if is_valid_cached_tarball(cache_path).await => {
+        Err(_e) if is_valid_tarball(cache_path).await => {
             let _ = async_fs::remove_file(&temp_path).await;
             Ok(())
         }
@@ -303,3 +343,7 @@ fn is_retryable_download_status(status: StatusCode) -> bool {
         StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
     ) || status.is_server_error()
 }
+
+#[cfg(test)]
+#[path = "scp_fallback_tests.rs"]
+mod tests;

@@ -1,4 +1,6 @@
 pub mod docker_sandbox;
+#[cfg(unix)]
+mod ssh_password_autofill;
 pub mod terminal_manager;
 mod terminal_view_adaptor;
 

@@ -23381,6 +23381,11 @@ impl Workspace {
                 .set
                 .insert(flags::SSH_AI_TERMINALIFICATION_CONTEXT_FLAG);
         }
+        if *ssh_settings.remember_ssh_passwords.value() {
+            context
+                .set
+                .insert(flags::REMEMBER_SSH_PASSWORDS_CONTEXT_FLAG);
+        }
 
         if keys_settings.extra_meta_keys.left_alt {
             context.set.insert(flags::EXTRA_META_KEYS_LEFT_CONTEXT_FLAG);

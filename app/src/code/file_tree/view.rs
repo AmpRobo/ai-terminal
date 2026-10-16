@@ -66,7 +66,9 @@ mod render;
 
 use crate::settings::{CodeSettings, CodeSettingsChangedEvent};
 
+#[cfg(not(feature = "local_fs"))]
 const REMOTE_TEXT: &str = "The Project Explorer requires access to your local workspace, which isn’t supported in remote sessions.";
+const NO_SSH_EXTENSION_TEXT: &str = "The Project Explorer needs the AI Terminal SSH extension, which isn’t running in this remote session.";
 const DISABLED_TEXT: &str = "The Project Explorer requires access to your local workspace. Open a new session or navigate to an active session to view.";
 const WSL_TEXT: &str = "The Project Explorer doesn't currently work in WSL.";
 
@@ -2972,7 +2974,7 @@ impl View for FileTreeView {
                 return if has_remote_server {
                     self.render_loading_state(app)
                 } else {
-                    self.render_error_state(REMOTE_TEXT.to_string(), app)
+                    self.render_error_state(NO_SSH_EXTENSION_TEXT.to_string(), app)
                 };
             }
 

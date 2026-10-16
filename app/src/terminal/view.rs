@@ -27534,6 +27534,41 @@ impl TerminalSurface for TerminalView {
         };
         self.propagate_upload_finished_event(exit_code, ctx);
     }
+
+    #[cfg(unix)]
+    fn on_ssh_password_autofill_event(
+        &mut self,
+        event: &crate::terminal::ssh::password_autofill::SshPasswordAutofillEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        use crate::terminal::ssh::password_autofill::SshPasswordAutofillEvent;
+        use crate::view_components::ToastLink;
+
+        let toast = match event {
+            SshPasswordAutofillEvent::PasswordFilled(account) => {
+                DismissibleToast::default(format!("Entered the saved SSH password for {account}."))
+            }
+            SshPasswordAutofillEvent::PasswordSaved(account) => {
+                DismissibleToast::success(format!("Saved the SSH password for {account}."))
+            }
+            SshPasswordAutofillEvent::SavedPasswordRejected(account) => {
+                DismissibleToast::error(format!(
+                    "The saved SSH password for {account} was rejected and removed. Enter the \
+                     correct password to save it again."
+                ))
+            }
+        }
+        .with_link(ToastLink::new("Manage".to_owned()).with_onclick_action(
+            WorkspaceAction::ShowSettingsPageWithSearch {
+                search_query: "ssh password".to_owned(),
+                section: Some(SettingsSection::AiTerminalify),
+            },
+        ));
+        let window_id = ctx.window_id();
+        ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+        });
+    }
 }
 
 impl TypedActionView for TerminalView {
@@ -30134,7 +30169,7 @@ pub fn cell_size_and_padding(
     }
 }
 
-fn command_first_word_and_suffix(command: &str) -> Option<(&str, &str)> {
+pub(crate) fn command_first_word_and_suffix(command: &str) -> Option<(&str, &str)> {
     let first_word = command.split_whitespace().next()?;
     let word_start = command.find(first_word)?;
     let rest = &command[word_start + first_word.len()..];

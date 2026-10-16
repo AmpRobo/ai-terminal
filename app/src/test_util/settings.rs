@@ -49,6 +49,7 @@ pub fn initialize_settings_for_tests_with_mode(
     use crate::terminal::session_settings::SessionSettings;
     use crate::terminal::settings::TerminalSettings;
     use crate::terminal::shared_session::settings::SharedSessionSettings;
+    use crate::terminal::ssh::password_autofill::SavedSshPasswords;
     use crate::undo_close::UndoCloseSettings;
     use crate::user_config::AiTerminalConfig;
     use crate::window_settings::WindowSettings;
@@ -126,5 +127,6 @@ pub fn initialize_settings_for_tests_with_mode(
     app.update(|ctx| {
         // Add settings models that are backed by secure storage, not user preferences.
         ctx.add_singleton_model(ai::api_keys::ApiKeyManager::new);
+        ctx.add_singleton_model(|_| SavedSshPasswords::default());
     });
 }

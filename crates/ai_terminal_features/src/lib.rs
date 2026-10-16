@@ -1006,6 +1006,10 @@ pub enum FeatureFlag {
     /// mirrors kept in the persistent build cache instead of cloning each one
     /// from the remote. Disabling it restores direct, network-only checkouts.
     GitMirrorCache,
+
+    /// Saves passwords that log in at SSH password prompts and enters them on later logins to the
+    /// same account.
+    SshPasswordAutofill,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =

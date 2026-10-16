@@ -13,6 +13,10 @@
 #   - EXECUTABLE_PATH: The path to the compiled executable we want to install.
 #   - BINARY_NAME: The name that the compiled executable should have on the target machine.
 #   - ARTIFACT: Which artifact to build: app or cli.
+#
+# Optional environment variables:
+#   - REMOTE_SERVER_TARBALLS_DIR: Remote-server tarballs (laid out as linux-<arch>/oz.tar.gz)
+#     to bundle with the app, which uploads them to SSH hosts.
 
 set -e
 
@@ -45,3 +49,9 @@ fi
 
 # Prepare the bundled resources directory.
 "$WORKSPACE_ROOT_DIR/script/prepare_bundled_resources" "${TARGET_DIR}/${OPT_DIR}/resources" "$RELEASE_CHANNEL"
+
+# The destination must match BUNDLED_TARBALLS_DIR_NAME in
+# app/src/remote_server/ssh_transport/installation/scp_fallback.rs.
+if [[ "$ARTIFACT" == "app" && -n "${REMOTE_SERVER_TARBALLS_DIR:-}" ]]; then
+  cp -R "$REMOTE_SERVER_TARBALLS_DIR" "${TARGET_DIR}/${OPT_DIR}/resources/remote-server"
+fi

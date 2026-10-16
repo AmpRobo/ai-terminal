@@ -7,34 +7,44 @@ use anyhow::Result;
 use remote_server::ssh::SshCommandError;
 use remote_server::transport::{Error, InstallOutcome, InstallSource};
 
-/// Runs the binary install sequence for the SSH transport. It first asks the
-/// remote host to download directly, then falls back to uploading a cached
-/// client-side tarball over SCP when the remote download path fails.
+/// Runs the binary install sequence for the SSH transport. Tarballs bundled
+/// with the client are built from the same sources, so a client that ships
+/// them uploads them over SCP. Otherwise it first asks the remote host to
+/// download directly, then falls back to uploading a cached client-side
+/// tarball over SCP when the remote download path fails.
 pub(super) async fn install_binary(socket_path: &Path) -> InstallOutcome {
     let binary_path = remote_server::setup::remote_server_binary();
     log::info!("Installing remote server binary to {binary_path}");
-    let mut outcome = match install_on_server(socket_path).await {
-        Ok(()) => InstallOutcome {
-            source: Some(InstallSource::Server),
-            result: Ok(()),
-        },
-        Err(server_err) => {
-            if scp_fallback::should_try_install(&server_err) {
-                log::info!("Remote server install failed; falling back to SCP upload");
-                match scp_fallback::install(socket_path).await {
-                    Ok(()) => InstallOutcome {
-                        source: Some(InstallSource::Client),
-                        result: Ok(()),
-                    },
-                    Err(e) => InstallOutcome {
-                        source: Some(InstallSource::Client),
-                        result: Err(e),
-                    },
-                }
-            } else {
-                InstallOutcome {
-                    source: Some(InstallSource::Server),
-                    result: Err(server_err),
+    let mut outcome = if scp_fallback::has_bundled_tarballs().await {
+        log::info!("Uploading the remote server bundled with this client over SCP");
+        InstallOutcome {
+            source: Some(InstallSource::Client),
+            result: scp_fallback::install(socket_path).await,
+        }
+    } else {
+        match install_on_server(socket_path).await {
+            Ok(()) => InstallOutcome {
+                source: Some(InstallSource::Server),
+                result: Ok(()),
+            },
+            Err(server_err) => {
+                if scp_fallback::should_try_install(&server_err) {
+                    log::info!("Remote server install failed; falling back to SCP upload");
+                    match scp_fallback::install(socket_path).await {
+                        Ok(()) => InstallOutcome {
+                            source: Some(InstallSource::Client),
+                            result: Ok(()),
+                        },
+                        Err(e) => InstallOutcome {
+                            source: Some(InstallSource::Client),
+                            result: Err(e),
+                        },
+                    }
+                } else {
+                    InstallOutcome {
+                        source: Some(InstallSource::Server),
+                        result: Err(server_err),
+                    }
                 }
             }
         }

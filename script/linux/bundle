@@ -27,6 +27,7 @@ BUILD_ARCH="$(uname -m)"
 DEBUG=false
 ARTIFACT="app"
 APPIMAGE_BASENAME=""
+REMOTE_SERVER_ARCHES=""
 
 # Cache all params so we can pass them to downstream scripts.
 ALL_PARAMS=$@
@@ -112,6 +113,21 @@ while (( "$#" )); do
         exit 1
       fi
       ;;
+    --remote-server-arches)
+      if [ -n "$2" ] && [ "${2:0:1}" != "-" ]; then
+        for remote_server_arch in $(IFS=, ; echo $2); do
+          if [ "$remote_server_arch" != "aarch64" -a "$remote_server_arch" != "x86_64" ]; then
+            echo "Error: Argument for $1 is invalid; got '$remote_server_arch' but expected 'aarch64' or 'x86_64'." >&2
+            exit 1
+          fi
+        done
+        REMOTE_SERVER_ARCHES="$2"
+        shift 2
+      else
+        echo "Error: Argument for $1 is missing" >&2
+        exit 1
+      fi
+      ;;
     *) # preserve positional arguments
       PARAMS="$PARAMS $1"
       shift
@@ -141,6 +157,16 @@ esac
 # (or vice versa). Packaging-only runs may still stage a prebuilt native binary.
 if [[ "$ARTIFACT" == "tui" && "$BUILD" == "true" && "$BUILD_ARCH" != "$HOST_ARCH" ]]; then
   echo "Error: TUI bundles must be built natively; requested '$BUILD_ARCH' on '$HOST_ARCH'." >&2
+  exit 1
+fi
+
+# Remote-server tarballs package the static CLI build, which app bundles can then embed.
+if [[ ${PACKAGES[@]} =~ "remote_server_tarball" && "$ARTIFACT" != "cli" ]]; then
+  echo "Error: The remote_server_tarball package requires --artifact cli." >&2
+  exit 1
+fi
+if [[ -n "$REMOTE_SERVER_ARCHES" && "$ARTIFACT" != "app" ]]; then
+  echo "Error: --remote-server-arches is only supported for the app artifact." >&2
   exit 1
 fi
 
@@ -390,6 +416,23 @@ if [[ "$ARTIFACT" == "cli" || "$ARTIFACT" == "ai_terminal_ctrl" || "$ARTIFACT" =
   "$WORKSPACE_ROOT_DIR/script/prepare_bundled_resources" "$BUNDLED_RESOURCES_DIR" "$RELEASE_CHANNEL"
 fi
 
+# The app only accepts a remote server reporting its own release tag, so the tarballs are built
+# for the same channel and inherit GIT_RELEASE_TAG (and the settings schema) from this run.
+if [[ -n "$REMOTE_SERVER_ARCHES" ]]; then
+  export REMOTE_SERVER_TARBALLS_DIR="$OUT_DIR/remote-server"
+  rm -rf "$REMOTE_SERVER_TARBALLS_DIR"
+  REMOTE_SERVER_BUNDLE_ARGS=( --artifact cli --channel "$RELEASE_CHANNEL" --packages remote_server_tarball )
+  if [[ $DEBUG = true ]]; then
+    REMOTE_SERVER_BUNDLE_ARGS+=( --debug )
+  fi
+  if [[ "$BUILD" != "true" ]]; then
+    REMOTE_SERVER_BUNDLE_ARGS+=( --skip-build )
+  fi
+  for remote_server_arch in $(IFS=, ; echo $REMOTE_SERVER_ARCHES); do
+    echo "Building the $remote_server_arch remote-server tarball"
+    "$WORKSPACE_ROOT_DIR/script/linux/bundle" "${REMOTE_SERVER_BUNDLE_ARGS[@]}" --arch "$remote_server_arch"
+  done
+fi
 
 # If this is being run within a GitHub action, set an output variable with the
 # location of the binary so it can be referenced by subsequent actions, as well
@@ -417,7 +460,14 @@ export \
   APPIMAGE_NAME \
   BUILD_ARCH \
   ARTIFACT \
-  CARGO_PROFILE
+  CARGO_PROFILE \
+  BUNDLED_RESOURCES_DIR
+
+# Build the remote-server tarball.
+if [[ ${PACKAGES[@]} =~ "remote_server_tarball" ]]; then
+  echo "Building remote-server tarball..."
+  "$WORKSPACE_ROOT_DIR/script/linux/bundle_remote_server_tarball"
+fi
 
 # Build the AppImage bundle.
 if [[ ${PACKAGES[@]} =~ "appimage" ]]; then

@@ -27,6 +27,8 @@ use super::event_loop::EventLoop;
 use super::shell::{ShellStarter, ShellStarterSource};
 use super::spawner::{PtySpawnHooks, PtySpawnMode};
 #[cfg(unix)]
+use super::ssh_password_autofill::{SshPasswordAutofill, wire_up_ssh_password_autofill};
+#[cfg(unix)]
 use super::terminal_attributes::TerminalAttributesPoller;
 use super::{mio_channel, recorder};
 use crate::ai::aws_credentials::AwsCredentialRefresher as _;
@@ -124,6 +126,12 @@ pub struct TerminalManager<S> {
     #[cfg(unix)]
     #[allow(dead_code)]
     terminal_attributes_poller: Option<ModelHandle<TerminalAttributesPoller>>,
+
+    /// Kept alive for as long as the current PTY. None if the event loop has not yet started or
+    /// SSH password autofill is disabled.
+    #[cfg(unix)]
+    #[allow(dead_code)]
+    ssh_password_autofill: Option<ModelHandle<SshPasswordAutofill>>,
 
     /// The manager is responsible for managing the lifetime
     /// of the PTY controller.
@@ -507,6 +515,8 @@ impl<S> TerminalManager<S> {
             view: surface.clone(),
             #[cfg(unix)]
             terminal_attributes_poller: None,
+            #[cfg(unix)]
+            ssh_password_autofill: None,
             pty_controller,
             remote_server_controller,
             #[cfg(feature = "integration_tests")]
@@ -768,10 +778,21 @@ impl<S> TerminalManager<S> {
                 &terminal_attributes_poller,
                 &self.view,
                 &resources.model_events,
-                model,
+                model.clone(),
                 ctx,
             );
             self.terminal_attributes_poller = Some(terminal_attributes_poller);
+            self.ssh_password_autofill = FeatureFlag::SshPasswordAutofill.is_enabled().then(|| {
+                wire_up_ssh_password_autofill(
+                    fd,
+                    &self.view,
+                    &resources.model_events,
+                    self.event_loop_tx.clone(),
+                    model,
+                    self.sessions.clone(),
+                    ctx,
+                )
+            });
         }
 
         ctx.spawn(
@@ -998,6 +1019,17 @@ fn on_shell_determined<S: TerminalSurface>(
         );
 
         manager.terminal_attributes_poller = Some(terminal_attributes_poller);
+        manager.ssh_password_autofill = FeatureFlag::SshPasswordAutofill.is_enabled().then(|| {
+            wire_up_ssh_password_autofill(
+                fd,
+                &manager.view,
+                &model_events,
+                manager.event_loop_tx.clone(),
+                model,
+                manager.sessions.clone(),
+                ctx,
+            )
+        });
     }
 }
 

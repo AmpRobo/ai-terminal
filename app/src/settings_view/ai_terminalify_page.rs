@@ -30,11 +30,12 @@ use super::{SettingsAction, SettingsSection, ToggleSettingActionPair, flags};
 use crate::appearance::Appearance;
 use crate::send_telemetry_from_ctx;
 use crate::server::telemetry::TelemetryEvent;
-use crate::settings::{ReuseExistingSshControlMaster, SshSettings};
+use crate::settings::{RememberSshPasswords, ReuseExistingSshControlMaster, SshSettings};
 use crate::terminal::ai_terminalify::settings::{
     AiTerminalifySettings, AiTerminalifySettingsChangedEvent, EnableSshAiTerminalification,
     SshExtensionInstallMode, SshExtensionInstallModeSetting,
 };
+use crate::terminal::ssh::password_autofill::{SavedSshPasswords, SshCredentialKey};
 use crate::ui_components::blended_colors;
 use crate::view_components::dropdown::{Dropdown, DropdownItem};
 use crate::view_components::{SubmittableTextInput, SubmittableTextInputEvent};
@@ -59,8 +60,25 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
             flags::SSH_AI_TERMINALIFICATION_CONTEXT_FLAG,
         ));
     }
+    if is_ssh_password_autofill_supported(app) {
+        toggle_binding_pairs.push(ToggleSettingActionPair::new(
+            "remembering SSH passwords",
+            builder(SettingsAction::AiTerminalifyPageToggle(
+                AiTerminalifyPageAction::ToggleRememberSshPasswords,
+            )),
+            context,
+            flags::REMEMBER_SSH_PASSWORDS_CONTEXT_FLAG,
+        ));
+    }
 
     ToggleSettingActionPair::add_toggle_setting_action_pairs_as_bindings(toggle_binding_pairs, app);
+}
+
+fn is_ssh_password_autofill_supported(app: &AppContext) -> bool {
+    FeatureFlag::SshPasswordAutofill.is_enabled()
+        && SshSettings::as_ref(app)
+            .remember_ssh_passwords
+            .is_supported_on_current_platform()
 }
 
 const CONTENT_FONT_SIZE: f32 = 12.;
@@ -72,6 +90,8 @@ const SPACE_AFTER_TEXT_INPUT: f32 = ITEM_VERTICAL_SPACING - BUILT_IN_TEXT_INPUT_
 const SSH_REUSE_CONTROL_MASTER_DESCRIPTION: &str = "Attach to a live SSH ControlMaster you already have configured for the destination host instead of creating an AI Terminal-owned one. Takes effect in new tabs.";
 
 const SSH_EXTENSION_INSTALL_MODE_DESCRIPTION: &str = "Controls the installation behavior for AI Terminal's SSH extension when a remote host doesn't have it installed.";
+
+const REMEMBER_SSH_PASSWORDS_DESCRIPTION: &str = "After you log in to an SSH host with a password, save it in your system's secure storage and enter it automatically on later logins to the same user, host, and port. A saved password that's rejected is removed, and the next one you type is saved.";
 
 /// This page lets users configure when they get asked to ai_terminalify a session. Some shell commands
 /// are recognized by default. Users can add new shell commands, or prevent the default ones from
@@ -108,6 +128,9 @@ impl AiTerminalifyPageView {
                 ctx.notify();
             },
         );
+        if is_ssh_password_autofill_supported(ctx) {
+            ctx.subscribe_to_model(&SavedSshPasswords::handle(ctx), |_, _, _, ctx| ctx.notify());
+        }
 
         // Added commands can be specified by regex, while denied commands are strictly exact
         // match.
@@ -169,6 +192,15 @@ impl AiTerminalifyPageView {
                 CategoryHeader::new("SSH")
                     .with_subtitle("AI Terminal-ify your interactive SSH sessions."),
                 vec![Box::new(SSHWidget::default())],
+            ));
+        }
+        if is_ssh_password_autofill_supported(ctx) {
+            categories.push(Category::new(
+                "SSH passwords",
+                vec![
+                    Box::new(RememberSshPasswordsWidget::default()),
+                    Box::new(SavedSshPasswordsWidget::default()),
+                ],
             ));
         }
         PageType::new_categorized(categories, None)
@@ -379,6 +411,8 @@ pub enum AiTerminalifyPageAction {
     ToggleReuseSshControlMaster,
     /// Set the SSH extension installation mode (always ask / always install / always skip).
     SetSshExtensionInstallMode(SshExtensionInstallMode),
+    ToggleRememberSshPasswords,
+    ForgetSshPassword(SshCredentialKey),
     OpenUrl(String),
 }
 
@@ -448,6 +482,21 @@ impl TypedActionView for AiTerminalifyPageView {
                         },
                         ctx
                     );
+                });
+            }
+            ToggleRememberSshPasswords => {
+                SshSettings::handle(ctx).update(ctx, |ssh_settings, ctx| {
+                    report_if_error!(
+                        ssh_settings
+                            .remember_ssh_passwords
+                            .toggle_and_save_value(ctx)
+                    );
+                });
+                ctx.notify();
+            }
+            ForgetSshPassword(account) => {
+                SavedSshPasswords::handle(ctx).update(ctx, |saved_passwords, ctx| {
+                    saved_passwords.forget(account, ctx);
                 });
             }
             OpenUrl(url) => {
@@ -754,6 +803,121 @@ impl SettingsWidget for SSHWidget {
         );
 
         column.finish()
+    }
+}
+
+#[derive(Default)]
+struct RememberSshPasswordsWidget {
+    switch_state: SwitchStateHandle,
+    local_only_icon_tooltip_states: RefCell<HashMap<String, MouseStateHandle>>,
+}
+
+impl SettingsWidget for RememberSshPasswordsWidget {
+    type View = AiTerminalifyPageView;
+
+    fn search_terms(&self) -> &str {
+        "ssh remember save passwords autofill login"
+    }
+
+    fn render(
+        &self,
+        _view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let remember_ssh_passwords = *SshSettings::as_ref(app).remember_ssh_passwords.value();
+        render_body_item::<AiTerminalifyPageAction>(
+            "Remember SSH passwords".into(),
+            None,
+            LocalOnlyIconState::for_setting(
+                RememberSshPasswords::storage_key(),
+                RememberSshPasswords::sync_to_cloud(),
+                &mut self.local_only_icon_tooltip_states.borrow_mut(),
+                app,
+            ),
+            ToggleState::Enabled,
+            appearance,
+            appearance
+                .ui_builder()
+                .switch(self.switch_state.clone())
+                .check(remember_ssh_passwords)
+                .build()
+                .on_click(|ctx, _, _| {
+                    ctx.dispatch_typed_action(AiTerminalifyPageAction::ToggleRememberSshPasswords);
+                })
+                .finish(),
+            Some(REMEMBER_SSH_PASSWORDS_DESCRIPTION.to_owned()),
+        )
+    }
+}
+
+#[derive(Default)]
+struct SavedSshPasswordsWidget {
+    forget_button_states: RefCell<HashMap<SshCredentialKey, MouseStateHandle>>,
+}
+
+impl SettingsWidget for SavedSshPasswordsWidget {
+    type View = AiTerminalifyPageView;
+
+    fn search_terms(&self) -> &str {
+        "ssh saved passwords forget remove delete login host"
+    }
+
+    fn render(
+        &self,
+        _view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let accounts: Vec<_> = SavedSshPasswords::as_ref(app)
+            .accounts(app)
+            .cloned()
+            .collect();
+        let mut forget_button_states = self.forget_button_states.borrow_mut();
+        forget_button_states.retain(|account, _| accounts.contains(account));
+        let mouse_states: Vec<_> = accounts
+            .iter()
+            .map(|account| {
+                forget_button_states
+                    .entry(account.clone())
+                    .or_default()
+                    .clone()
+            })
+            .collect();
+
+        let mut column = Flex::column().with_child(
+            build_sub_sub_title("Saved SSH passwords", appearance)
+                .with_padding_bottom(BUILT_IN_TEXT_INPUT_MARGIN)
+                .finish(),
+        );
+        if accounts.is_empty() {
+            column.add_child(
+                appearance
+                    .ui_builder()
+                    .paragraph("No saved passwords.".to_owned())
+                    .with_style(UiComponentStyles {
+                        font_color: Some(blended_colors::text_sub(
+                            appearance.theme(),
+                            appearance.theme().surface_1(),
+                        )),
+                        font_size: Some(CONTENT_FONT_SIZE),
+                        ..Default::default()
+                    })
+                    .build()
+                    .finish(),
+            );
+        }
+        render_alternating_color_list(
+            &mut column,
+            &accounts,
+            &mouse_states,
+            |index| AiTerminalifyPageAction::ForgetSshPassword(accounts[index].clone()),
+            appearance,
+        );
+
+        Container::new(column.finish())
+            .with_margin_bottom(ITEM_VERTICAL_SPACING)
+            .finish()
     }
 }
 

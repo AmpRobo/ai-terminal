@@ -13,6 +13,8 @@ use crate::terminal::event::AfterBlockCompletedEvent;
 use crate::terminal::model::completions::ShellCompletion;
 #[cfg(unix)]
 use crate::terminal::model::terminal_model::BlockIndex;
+#[cfg(unix)]
+use crate::terminal::ssh::password_autofill::SshPasswordAutofillEvent;
 use crate::terminal::view::ExecuteCommandEvent;
 use crate::terminal::{ShellLaunchData, SizeUpdate};
 
@@ -119,6 +121,15 @@ where
     fn on_polled_block_completed(
         &mut self,
         _completed: &AfterBlockCompletedEvent,
+        _ctx: &mut ViewContext<Self>,
+    ) {
+    }
+
+    /// Called when SSH password autofill enters, saves, or removes a password.
+    #[cfg(unix)]
+    fn on_ssh_password_autofill_event(
+        &mut self,
+        _event: &SshPasswordAutofillEvent,
         _ctx: &mut ViewContext<Self>,
     ) {
     }
