@@ -177,6 +177,15 @@ async fn local_remote_server_tarball(platform: &RemotePlatform) -> anyhow::Resul
         let _ = async_fs::remove_file(&cache_path).await;
     }
 
+    if !remote_server::setup::downloads_remote_server_artifact() {
+        anyhow::bail!(
+            "no SSH extension packaged for {}-{}. Rebuild AI Terminal so the local \
+             remote-server is included",
+            platform.os.as_str(),
+            platform.arch.as_str(),
+        );
+    }
+
     let url = remote_server::setup::download_tarball_url(platform);
     log::info!(
         "Downloading remote-server tarball from {url} into cache at {}",

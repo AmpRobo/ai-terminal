@@ -388,6 +388,9 @@ pub struct TerminalModel {
     lifecycle_coordinator: BlockLifecycleCoordinator,
     /// Whether the blocklist has been cleared in the lifetime of this terminal model.
     pub blocklist_has_been_cleared: bool,
+    /// Block that is running the shell `clear` command. Its completion must not be
+    /// written back into session history after the saved blocks are deleted.
+    pending_persisted_block_drop: Option<BlockId>,
 
     alt_screen_active: bool,
 
@@ -1089,6 +1092,7 @@ impl TerminalModel {
             block_list,
             lifecycle_coordinator: BlockLifecycleCoordinator::default(),
             blocklist_has_been_cleared: false,
+            pending_persisted_block_drop: None,
             alt_screen_active: false,
             title_stack: Vec::new(),
             title: None,
@@ -2030,6 +2034,17 @@ impl TerminalModel {
 
     pub fn clear_visible_screen(&mut self) {
         self.block_list.clear_visible_screen();
+    }
+
+    /// Returns whether `block_id` is the `clear` command whose output should be left
+    /// out of session history, and consumes that pending drop.
+    pub fn take_persisted_block_drop(&mut self, block_id: &BlockId) -> bool {
+        if self.pending_persisted_block_drop.as_ref() == Some(block_id) {
+            self.pending_persisted_block_drop = None;
+            true
+        } else {
+            false
+        }
     }
 
     pub fn update_colors(&mut self, colors: color::List) {
@@ -3244,7 +3259,12 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn clear(&mut self, _data: ClearValue) {
+        // The running block is `clear` itself. Leaving it out of session history keeps a
+        // restart from showing that command, or a block save that landed after the persisted
+        // history was deleted.
+        self.pending_persisted_block_drop = Some(self.block_list().active_block_id().clone());
         self.clear_visible_screen();
+        self.event_proxy.send_app_event(Event::DropPersistedBlocks);
     }
 
     fn input_buffer(&mut self, data: InputBufferValue) {

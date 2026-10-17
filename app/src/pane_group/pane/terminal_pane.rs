@@ -977,6 +977,13 @@ fn handle_terminal_view_event(
                     terminal_pane.delete_blocks(ctx);
                 }
             }
+            Event::DropPersistedBlocks => {
+                // `clear` only moves blocks out of the viewport. Delete the saved
+                // copies so the next launch does not restore the cleared screen.
+                if let Some(terminal_pane) = group.terminal_session_by_id(pane_id) {
+                    terminal_pane.delete_blocks(ctx);
+                }
+            }
             Event::ShareModalOpened(block_id) => {
                 let Some(session) = group.terminal_view_from_pane_id(pane_id, ctx) else {
                     return;
@@ -1011,10 +1018,16 @@ fn handle_terminal_view_event(
             Event::AppStateChanged => {
                 ctx.emit(pane_group::Event::AppStateChanged);
             }
-            Event::BlockCompleted { block, is_local } => {
+            Event::BlockCompleted {
+                block,
+                is_local,
+                persist,
+            } => {
                 match group.terminal_session_by_id(pane_id) {
                     Some(pane) => {
-                        if *GeneralSettings::as_ref(ctx).restore_session
+                        if !*persist {
+                            pane.delete_blocks(ctx);
+                        } else if *GeneralSettings::as_ref(ctx).restore_session
                             && AppExecutionMode::as_ref(ctx).can_save_session()
                             && let Some(sender) = &group.model_event_sender
                         {

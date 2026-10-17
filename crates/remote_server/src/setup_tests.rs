@@ -691,6 +691,20 @@ fn parse_uname_unsupported_armv7l() {
 }
 
 #[test]
+fn oss_packages_its_remote_server_instead_of_downloading_one() {
+    // Unit tests initialize ChannelState as Oss, which has no CDN artifact.
+    assert!(!downloads_remote_server_artifact());
+    assert_eq!(
+        remote_server_dir(),
+        "~/.ai-terminal/remote-server".to_string()
+    );
+    assert_eq!(
+        remote_server_binary(),
+        "~/.ai-terminal/remote-server/ai-terminal-oss".to_string()
+    );
+}
+
+#[test]
 fn parse_preinstall_missing_status_falls_open() {
     // Garbled / partial script output — missing status field. Confirms
     // the fail-open invariant: anything we can't positively classify as

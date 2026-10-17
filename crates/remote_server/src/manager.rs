@@ -1280,6 +1280,9 @@ impl HostRequestHandle {
 struct NavigationCache {
     /// The path string last sent to `navigate_to_directory`.
     path: String,
+    /// Host that served this navigation. Recorded at request time so a later
+    /// lookup does not depend on the session still being `Connected`.
+    host_id: HostId,
     /// Populated by the spawner callback when the server responds
     /// successfully. `None` until the first successful response.
     result: Option<RemoteNavigationResult>,
@@ -2812,6 +2815,7 @@ impl RemoteServerManager {
             session_id,
             NavigationCache {
                 path: path.clone(),
+                host_id: host_id.clone(),
                 result: None,
             },
         );
@@ -2861,6 +2865,32 @@ impl RemoteServerManager {
             .detach();
 
         Some(rx)
+    }
+
+    /// Returns the server-indexed path for a shell-reported remote CWD.
+    ///
+    /// Shell integration reports a logical path (`pwd -L`, symlinks kept). The
+    /// remote server indexes the canonical path, and repo metadata is stored
+    /// under that key. Callers that display the shell path directly end up
+    /// with an empty project-explorer placeholder whenever the two differ.
+    pub fn indexed_remote_path_for_requested_path(
+        &self,
+        host_id: &HostId,
+        requested_path: &StandardizedPath,
+    ) -> Option<RemotePath> {
+        self.last_navigation.values().find_map(|cache| {
+            if &cache.host_id != host_id {
+                return None;
+            }
+            let cached_path = StandardizedPath::try_new(&cache.path).ok()?;
+            if &cached_path != requested_path {
+                return None;
+            }
+            cache
+                .result
+                .as_ref()
+                .map(|result| result.remote_path.clone())
+        })
     }
 
     /// Sends a `SessionBootstrapped` notification to the remote server.

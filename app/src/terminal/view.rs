@@ -1713,11 +1713,17 @@ pub enum Event {
     Escape,
     Exited,
     BlockListCleared,
+    /// The shell `clear` command discarded on-screen history. Saved blocks for this
+    /// session should be deleted so session restore does not bring them back.
+    DropPersistedBlocks,
     ShareModalOpened(BlockIndex),
     SendNotification(BlockNotification),
     BlockCompleted {
         block: Arc<SerializedBlock>,
         is_local: bool,
+        /// When false, this block is the shell `clear` command and must not be written
+        /// into session history.
+        persist: bool,
     },
     Pane(PaneEvent),
     OpenSettings(SettingsSection),
@@ -12501,6 +12507,9 @@ impl TerminalView {
                 self.update_scroll_position_locking(ScrollPositionUpdate::AfterClear, ctx);
                 ctx.notify();
             }
+            ModelEvent::DropPersistedBlocks => {
+                ctx.emit(Event::DropPersistedBlocks);
+            }
             ModelEvent::Title(title) => {
                 self.terminal_title = title.to_owned();
                 if self.ignore_next_set_title_event {
@@ -13354,8 +13363,12 @@ impl TerminalView {
                         system_info.handle_block_created();
                     });
 
-                    // Emit the event to the parent view. This will save the block to sqlite if
-                    // session restoration is enabled.
+                    // Parent view persists the block when session restoration is on.
+                    // `clear` drops that history instead of saving this block.
+                    let persist = !self
+                        .model
+                        .lock()
+                        .take_persisted_block_drop(&serialized_block.id);
                     ctx.emit(Event::BlockCompleted {
                         block: serialized_block.clone(),
                         is_local: !self.is_block_considered_remote(
@@ -13366,6 +13379,7 @@ impl TerminalView {
                             })),
                             ctx,
                         ),
+                        persist,
                     });
                 } else if let BlockType::Background(serialized_block) = block_type {
                     // Because background output blocks are before the active block, they need to be saved
@@ -13377,6 +13391,7 @@ impl TerminalView {
                             None,
                             ctx,
                         ),
+                        persist: true,
                     });
                 } else if let BlockType::BootstrapVisible(serialized_block) = block_type {
                     // Re-compute the focus after the visible bootstrap block has completed.
@@ -13388,6 +13403,7 @@ impl TerminalView {
                             None,
                             ctx,
                         ),
+                        persist: true,
                     });
                 }
 

@@ -1,6 +1,6 @@
 # 编译 Linux 的 .deb 和 .AppImage
 
-在 Linux 上打包图形界面客户端。两条产物共用一次 Rust 编译，再分别封装。
+在 Linux 上打包图形界面客户端。两条产物共用两次 Rust 编译（GUI 二进制，以及打进包里的 SSH extension），再分别封装。
 
 推荐直接运行：
 
@@ -32,7 +32,7 @@ target/release-lto/bundle/linux/ai-terminal_<version>_<deb-arch>.deb
 | `--release-tag` | 传给 `GIT_RELEASE_TAG`。`.deb` 的 `Version` 会去掉前缀 `v`，并把 `preview_1` 这类后缀里的 `_` 换成 `.` |
 | `--debug` | 使用 Cargo `dev` 配置，编译更快，二进制更大 |
 | `--skip-build` | 跳过 `cargo build`，只用已有二进制重新打包 |
-| `--arch` | `x86_64` 或 `aarch64`。GUI 二进制按本机架构编译，这里必须与本机一致 |
+| `--arch` | `x86_64` 或 `aarch64`。必须与本机一致。GUI 二进制和 SSH extension 都按这个架构编译 |
 | `--features` | 追加到该渠道原有 Cargo features 之后 |
 | `--install-system-deps` | 调用仓库里的 apt 安装脚本，并补装打包工具。需要 sudo |
 
@@ -56,7 +56,8 @@ target/release-lto/bundle/linux/ai-terminal_<version>_<deb-arch>.deb
    `dev` / `preview` / `stable` 还会带上 `crash_reporting` 等渠道 feature。首次 `release-lto` 构建通常要几十分钟。
 3. 复制一份未 strip 的 `.debug` 二进制，再对要打包的二进制 `strip`。`dev` 只去掉调试符号，其余渠道去掉全部符号。
 4. 运行编出的二进制 `dump-settings-schema`，生成 `settings_schema.json`。`--skip-build` 时必须能找到这份文件，或自行设置 `SETTINGS_SCHEMA_SOURCE` / `SETTINGS_SCHEMA_EXECUTABLE`。
-5. 按 `--packages` 封装。两种格式都会先把二进制、`.desktop`、图标和 `resources/` 装进一个临时目录（`script/linux/bundle_install`）。`cargo about generate` 在这一步生成 `THIRD_PARTY_LICENSES.txt`，因此需要 `cargo-about` 0.8.4。
+5. 编译 SSH extension。这是同一仓库里的静态 musl CLI，架构与 GUI 相同。`oss` 在 `x86_64` 上等价于再跑一次 `script/linux/bundle --artifact cli --channel oss --packages remote_server_tarball --arch x86_64`。产物是 `resources/remote-server/linux-<arch>/oz.tar.gz`，AppImage 和 deb 都会装进安装目录。第一次 SSH 用这个包，不再从网络下载。
+6. 按 `--packages` 封装。两种格式都会先把二进制、`.desktop`、图标、`resources/` 和 SSH extension 装进一个临时目录（`script/linux/bundle_install`）。`cargo about generate` 在这一步生成 `THIRD_PARTY_LICENSES.txt`，因此需要 `cargo-about` 0.8.4。
 
 ### AppImage
 
@@ -88,10 +89,11 @@ target/release-lto/bundle/linux/ai-terminal_<version>_<deb-arch>.deb
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 ./script/linux/install_linuxdeploy
 ./script/install_cargo_release_deps --no-build-deps
-./script/bundle --channel oss --packages appimage,deb --release-tag v0.1.0
+./script/bundle --channel oss --packages appimage,deb --release-tag v0.1.0 \
+  --arch "$(uname -m)" --remote-server-arches "$(uname -m)"
 ```
 
-只打一种包时把 `--packages` 改成 `appimage` 或 `deb`。已有同 profile 的二进制时可以加 `--skip-build`，并保证对应的 `settings_schema.json` 还在，例如 `target/release-lto/settings_schema.json`。
+只打一种包时把 `--packages` 改成 `appimage` 或 `deb`。`--remote-server-arches` 必须保留，否则包里没有 SSH extension。已有同 profile 的 GUI 和 musl CLI 时可以加 `--skip-build`，并保证对应的 `settings_schema.json` 还在，例如 `target/release-lto/settings_schema.json`。
 
 ## 安装依赖
 

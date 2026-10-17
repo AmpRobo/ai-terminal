@@ -239,6 +239,7 @@ impl ModelEventDispatcher {
                 ModelEvent::CursorBlinkingChange(is_blinking)
             }
             Event::TerminalClear => ModelEvent::TerminalClear,
+            Event::DropPersistedBlocks => ModelEvent::DropPersistedBlocks,
             Event::DetectedEndOfSshLogin(check_type) => {
                 ModelEvent::DetectedEndOfSshLogin(check_type)
             }
@@ -408,6 +409,7 @@ pub enum ModelEvent {
     ),
     CursorBlinkingChange(bool),
     TerminalClear,
+    DropPersistedBlocks,
     Bell,
     /// The shell process exited but the terminal has not been finalized yet; the surface must
     /// either recover the shell or call `TerminalModel::finalize_exit`.

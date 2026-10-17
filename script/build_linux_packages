@@ -2,6 +2,11 @@
 #
 # Build the Linux GUI .deb and AppImage.
 #
+# Both packages are built from the same compiled inputs:
+# - the GUI binary for the selected channel
+# - the SSH extension, a static musl CLI compiled from this checkout for the
+#   same architecture and packed as resources/remote-server/linux-<arch>/oz.tar.gz
+#
 # Defaults to the oss channel, which does not need the private
 # ai-terminal-channel-config binary. See how_to_build.md.
 
@@ -16,7 +21,7 @@ RELEASE_TAG="${GIT_RELEASE_TAG:-v0.1.0}"
 INSTALL_SYSTEM_DEPS=false
 DEBUG=false
 SKIP_BUILD=false
-BUILD_ARCH="$(uname -m)"
+BUILD_ARCH=""
 EXTRA=()
 
 usage() {
@@ -31,7 +36,8 @@ Options:
   --release-tag TAG     GIT_RELEASE_TAG used for the .deb version (default: v0.1.0)
   --debug               Cargo dev profile instead of release-lto
   --skip-build          Package an existing binary
-  --arch ARCH           x86_64 or aarch64
+  --arch ARCH           x86_64 or aarch64. Must match this machine. The GUI binary
+                        and the SSH extension are both compiled for it.
   --features FEATURES   Extra Cargo features, appended to the channel set
   --install-system-deps Install apt build and packaging packages (uses sudo)
   -h, --help            Show this help
@@ -76,7 +82,6 @@ while (($#)); do
       ;;
     --arch)
       BUILD_ARCH="$2"
-      EXTRA+=("--arch" "$2")
       shift 2
       ;;
     *)
@@ -105,6 +110,30 @@ esac
 
 if [[ "$(uname -s)" != "Linux" ]]; then
   echo "This script only builds Linux packages (current OS: $(uname -s))." >&2
+  exit 1
+fi
+
+case "$(uname -m)" in
+  x86_64|amd64) HOST_ARCH="x86_64" ;;
+  aarch64|arm64) HOST_ARCH="aarch64" ;;
+  *)
+    echo "Unsupported host architecture: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+if [[ -z "$BUILD_ARCH" ]]; then
+  BUILD_ARCH="$HOST_ARCH"
+fi
+case "$BUILD_ARCH" in
+  x86_64|amd64) BUILD_ARCH="x86_64" ;;
+  aarch64|arm64) BUILD_ARCH="aarch64" ;;
+  *)
+    echo "Unsupported architecture: $BUILD_ARCH" >&2
+    exit 1
+    ;;
+esac
+if [[ "$BUILD_ARCH" != "$HOST_ARCH" ]]; then
+  echo "The GUI package must be compiled on the target architecture (host $HOST_ARCH, requested $BUILD_ARCH)." >&2
   exit 1
 fi
 
@@ -169,8 +198,13 @@ if [[ "$SKIP_BUILD" == true && -z "${SETTINGS_SCHEMA_SOURCE:-}" && -z "${SETTING
   fi
 fi
 
+# One GUI compile and one SSH-extension compile, then both package formats
+# install those artifacts. --remote-server-arches builds the static CLI from
+# this checkout; script/linux/bundle copies it into the AppImage and the deb.
 "$ROOT/script/bundle" \
   --channel "$CHANNEL" \
   --packages "$PACKAGES" \
   --release-tag "$RELEASE_TAG" \
+  --arch "$BUILD_ARCH" \
+  --remote-server-arches "$BUILD_ARCH" \
   "${EXTRA[@]}"

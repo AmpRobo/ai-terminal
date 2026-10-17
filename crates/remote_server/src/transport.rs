@@ -103,10 +103,23 @@ pub enum Error {
     Other(anyhow::Error),
 }
 
-/// Maximum number of stderr characters to include in the user-facing
-/// detail for `ScriptFailed` errors. Keeps the banner reasonable even
-/// when a remote script dumps a large amount of output.
+/// Maximum number of characters to include in the user-facing detail.
+/// Keeps the banner reasonable when a remote script or local error dumps
+/// a large amount of output.
 const MAX_STDERR_DISPLAY_CHARS: usize = 512;
+
+fn truncate_detail(text: &str) -> String {
+    if text.chars().count() > MAX_STDERR_DISPLAY_CHARS {
+        let end = text
+            .char_indices()
+            .nth(MAX_STDERR_DISPLAY_CHARS)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len());
+        format!("{}…", &text[..end])
+    } else {
+        text.to_string()
+    }
+}
 
 impl Error {
     /// Converts this error into a [`UserFacingError`] suitable for the
@@ -121,19 +134,17 @@ impl Error {
             Self::UnsupportedOs { os } => Some(format!("Unsupported OS: {os}")),
             Self::UnsupportedArch { arch } => Some(format!("Unsupported architecture: {arch}")),
             Self::ScriptFailed { exit_code, stderr } => {
-                let truncated = if stderr.chars().count() > MAX_STDERR_DISPLAY_CHARS {
-                    let end: usize = stderr
-                        .char_indices()
-                        .nth(MAX_STDERR_DISPLAY_CHARS)
-                        .map(|(i, _)| i)
-                        .unwrap_or(stderr.len());
-                    format!("{}…", &stderr[..end])
-                } else {
-                    stderr.clone()
-                };
+                let truncated = truncate_detail(stderr);
                 Some(format!("Script exited with code {exit_code}: {truncated}"))
             }
-            Self::Other(_) => None,
+            Self::Other(err) => {
+                let message = err.to_string();
+                if message.is_empty() {
+                    None
+                } else {
+                    Some(truncate_detail(&message))
+                }
+            }
         };
         UserFacingError { body, detail }
     }
@@ -304,3 +315,7 @@ pub trait RemoteTransport: Send + Sync + std::fmt::Debug {
     /// the reconnect loop entirely.
     fn is_reconnectable(&self, exit_status: Option<&RemoteServerExitStatus>) -> bool;
 }
+
+#[cfg(test)]
+#[path = "transport_tests.rs"]
+mod tests;

@@ -143,6 +143,26 @@ export FEATURES
 export AI_TERMINAL_BIN_NAME
 export AI_TERMINAL_CHANNEL
 
+# cargo run writes the binary to target/debug, target/release, or target/<profile>.
+cargo_output_dir() {
+  local profile="debug"
+  local prev=""
+  local arg
+  for arg in "${CARGO_PARAMS[@]}"; do
+    if [[ "$prev" == "--profile" ]]; then
+      if [[ "$arg" == "dev" ]]; then
+        profile="debug"
+      else
+        profile="$arg"
+      fi
+    elif [[ "$arg" == "--release" ]]; then
+      profile="release"
+    fi
+    prev="$arg"
+  done
+  echo "${CARGO_TARGET_DIR:-$REPO_ROOT/target}/$profile"
+}
+
 if [[ "$OS_TYPE" = "Darwin" ]]; then
   if [[ ${#AI_TERMINAL_ARGS[@]} -gt 0 ]]; then
     exec ./script/macos/run "${MAC_ARGS[@]}" -- "${AI_TERMINAL_ARGS[@]}"
@@ -150,6 +170,9 @@ if [[ "$OS_TYPE" = "Darwin" ]]; then
     exec ./script/macos/run "${MAC_ARGS[@]}"
   fi
 elif [[ "$OS_TYPE" = "Linux" ]] || [[ "$OS_TYPE" =~ ^(MINGW64_NT|MSYS_NT) ]]; then
+  if [[ "$OS_TYPE" = "Linux" && "${AI_TERMINAL_SKIP_REMOTE_SERVER_BUNDLE:-}" != "1" ]]; then
+    ./script/linux/stage_bundled_remote_server "$AI_TERMINAL_CHANNEL" "$(cargo_output_dir)"
+  fi
   echo "Running cargo run --bin $AI_TERMINAL_BIN_NAME --features \"$FEATURES\" ${CARGO_PARAMS[*]}"
   if [[ ${#AI_TERMINAL_ARGS[@]} -gt 0 ]]; then
     cargo run --bin "$AI_TERMINAL_BIN_NAME" --features "$FEATURES" "${CARGO_PARAMS[@]}" -- "${AI_TERMINAL_ARGS[@]}"

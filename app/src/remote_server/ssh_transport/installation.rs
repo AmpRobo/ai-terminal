@@ -7,11 +7,11 @@ use anyhow::Result;
 use remote_server::ssh::SshCommandError;
 use remote_server::transport::{Error, InstallOutcome, InstallSource};
 
-/// Runs the binary install sequence for the SSH transport. Tarballs bundled
-/// with the client are built from the same sources, so a client that ships
-/// them uploads them over SCP. Otherwise it first asks the remote host to
-/// download directly, then falls back to uploading a cached client-side
-/// tarball over SCP when the remote download path fails.
+/// Runs the binary install sequence for the SSH transport.
+///
+/// Prefers the remote-server tarball compiled into this client. Channels that
+/// publish an artifact otherwise ask the remote host to download it, then fall
+/// back to uploading a client-side tarball over SCP.
 pub(super) async fn install_binary(socket_path: &Path) -> InstallOutcome {
     let binary_path = remote_server::setup::remote_server_binary();
     log::info!("Installing remote server binary to {binary_path}");
@@ -20,6 +20,15 @@ pub(super) async fn install_binary(socket_path: &Path) -> InstallOutcome {
         InstallOutcome {
             source: Some(InstallSource::Client),
             result: scp_fallback::install(socket_path).await,
+        }
+    } else if !remote_server::setup::downloads_remote_server_artifact() {
+        log::info!("OSS build has no bundled SSH extension tarball");
+        InstallOutcome {
+            source: Some(InstallSource::Client),
+            result: Err(Error::Other(anyhow::anyhow!(
+                "this build does not include the SSH extension. Rebuild AI Terminal so the \
+                 local remote-server is packaged with it"
+            ))),
         }
     } else {
         match install_on_server(socket_path).await {

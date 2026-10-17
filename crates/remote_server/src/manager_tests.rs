@@ -1,11 +1,12 @@
 use ai_terminal_core::SessionId;
 use ai_terminal_ui_core::App;
+use ai_terminal_util::remote_path::{RemoteNavigationResult, RemotePath};
 use ai_terminal_util::standardized_path::StandardizedPath;
 use futures::channel::oneshot;
 
 use super::{
-    HostRequestError, PendingHostRequest, RemoteServerManager, RemoteServerManagerEvent,
-    RipgrepSearchParams,
+    HostRequestError, NavigationCache, PendingHostRequest, RemoteServerManager,
+    RemoteServerManagerEvent, RipgrepSearchParams,
 };
 use crate::HostId;
 use crate::proto::{ClientMessage, RemoteAgentContextSnapshot, WriteFile, host_scoped_request};
@@ -105,5 +106,58 @@ fn start_ripgrep_search_without_connected_host_resolves_immediately() {
             pending.result().await,
             Err(HostRequestError::AllSessionsDisconnected)
         ));
+    });
+}
+
+#[test]
+fn indexed_remote_path_follows_canonical_navigation_result() {
+    App::test((), |mut app| async move {
+        let manager = app.add_model(RemoteServerManager::new);
+        let host_id = HostId::new("host".to_string());
+        let other_host = HostId::new("other-host".to_string());
+        let logical = StandardizedPath::try_new("/home/user/project").unwrap();
+        let canonical = StandardizedPath::try_new("/var/home/user/project").unwrap();
+        let other_dir = StandardizedPath::try_new("/home/user/other").unwrap();
+
+        manager.update(&mut app, |manager, _| {
+            manager.last_navigation.insert(
+                SessionId::from(7),
+                NavigationCache {
+                    // Trailing slash must still match the normalized shell path.
+                    path: "/home/user/project/".to_string(),
+                    host_id: host_id.clone(),
+                    result: Some(RemoteNavigationResult {
+                        remote_path: RemotePath::new(host_id.clone(), canonical.clone()),
+                        is_git: false,
+                    }),
+                },
+            );
+            // In-flight navigation has no indexed path yet.
+            manager.last_navigation.insert(
+                SessionId::from(8),
+                NavigationCache {
+                    path: other_dir.to_string(),
+                    host_id: host_id.clone(),
+                    result: None,
+                },
+            );
+
+            assert_eq!(
+                manager
+                    .indexed_remote_path_for_requested_path(&host_id, &logical)
+                    .map(|path| path.path),
+                Some(canonical)
+            );
+            assert!(
+                manager
+                    .indexed_remote_path_for_requested_path(&other_host, &logical)
+                    .is_none()
+            );
+            assert!(
+                manager
+                    .indexed_remote_path_for_requested_path(&host_id, &other_dir)
+                    .is_none()
+            );
+        });
     });
 }

@@ -339,18 +339,13 @@ pub fn parse_uname_output(
 /// - dev:         `~/.ai-terminal-dev/remote-server`
 /// - local:       `~/.ai-terminal-local/remote-server`
 /// - integration: `~/.ai-terminal-dev/remote-server`
-/// - ai-terminal-oss:    `~/.ai-terminal-oss/remote-server`
+/// - ai-terminal-oss: `~/.ai-terminal/remote-server`
 pub fn remote_server_dir() -> String {
     let ai_terminal_dir = match ChannelState::channel() {
-        Channel::Stable => ".ai-terminal",
+        Channel::Stable | Channel::Oss => ".ai-terminal",
         Channel::Preview => ".ai-terminal-preview",
         Channel::Dev | Channel::Integration => ".ai-terminal-dev",
         Channel::Local => ".ai-terminal-local",
-        Channel::Oss => {
-            // TODO(alokedesai): need to figure out how remote server works with ai-terminal-oss
-            // For now, return what Dev returns.
-            ".ai-terminal-dev"
-        }
     };
     format!("~/{ai_terminal_dir}/remote-server")
 }
@@ -617,12 +612,17 @@ fn download_channel() -> &'static str {
         Channel::Stable => "stable",
         Channel::Preview => "preview",
         Channel::Dev | Channel::Local | Channel::Integration => "dev",
-        Channel::Oss => {
-            // TODO(alokedesai): need to figure out how remote server works with ai-terminal-oss
-            // For now, return what Dev returns.
-            "dev"
-        }
+        // OSS has no published artifact. The app packages a locally built
+        // tarball and installs that over SCP.
+        Channel::Oss => "dev",
     }
+}
+
+/// Whether this channel can download a published remote-server artifact.
+///
+/// OSS builds package the extension compiled with the client and do not fetch one.
+pub fn downloads_remote_server_artifact() -> bool {
+    !matches!(ChannelState::channel(), Channel::Oss)
 }
 
 /// Returns the version query string for the download URL (e.g.

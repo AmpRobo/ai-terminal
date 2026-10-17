@@ -65,6 +65,9 @@ pub enum Event {
     ),
     CursorBlinkingChange(bool),
     TerminalClear,
+    /// The shell `clear` command discarded on-screen history. Saved blocks for this
+    /// session should be deleted so session restore does not bring them back.
+    DropPersistedBlocks,
     Bell,
     /// The shell process exited but the terminal has not been finalized yet; the surface must
     /// either recover the shell or call `TerminalModel::finalize_exit`.
@@ -441,6 +444,7 @@ impl Debug for Event {
             Event::ClipboardStore(_, text) => write!(f, "ClipboardStore({text})"),
             Event::ClipboardLoad(_, _) => write!(f, "ClipboardLoad()"),
             Event::TerminalClear => write!(f, "TerminalClear"),
+            Event::DropPersistedBlocks => write!(f, "DropPersistedBlocks"),
             Event::Bell => write!(f, "Bell"),
             Event::ShellExitObserved { status } => write!(f, "ShellExitObserved({status:?})"),
             Event::Exit { reason } => write!(f, "Exit({reason:?})"),

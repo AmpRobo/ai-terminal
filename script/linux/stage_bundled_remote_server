@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+#
+# Compiles the SSH extension from this checkout and writes it next to the app
+# binary, at resources/remote-server/linux-<arch>/oz.tar.gz. The first SSH
+# session uploads that tarball instead of downloading one.
+
+set -euo pipefail
+
+CHANNEL="${1:?channel}"
+OUTPUT_DIR="${2:?cargo output dir}"
+
+case "$(uname -m)" in
+  x86_64|amd64) ARCH="x86_64" ;;
+  aarch64|arm64) ARCH="aarch64" ;;
+  *)
+    echo "Error: SSH extension staging is not supported on $(uname -m)." >&2
+    exit 1
+    ;;
+esac
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export REMOTE_SERVER_TARBALLS_DIR="$OUTPUT_DIR/resources/remote-server"
+
+cd "$ROOT"
+./script/linux/bundle \
+  --artifact cli \
+  --channel "$CHANNEL" \
+  --packages remote_server_tarball \
+  --arch "$ARCH"

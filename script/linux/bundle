@@ -28,6 +28,7 @@ DEBUG=false
 ARTIFACT="app"
 APPIMAGE_BASENAME=""
 REMOTE_SERVER_ARCHES=""
+REMOTE_SERVER_ARCHES_REQUESTED=false
 
 # Cache all params so we can pass them to downstream scripts.
 ALL_PARAMS=$@
@@ -115,13 +116,18 @@ while (( "$#" )); do
       ;;
     --remote-server-arches)
       if [ -n "$2" ] && [ "${2:0:1}" != "-" ]; then
-        for remote_server_arch in $(IFS=, ; echo $2); do
-          if [ "$remote_server_arch" != "aarch64" -a "$remote_server_arch" != "x86_64" ]; then
-            echo "Error: Argument for $1 is invalid; got '$remote_server_arch' but expected 'aarch64' or 'x86_64'." >&2
-            exit 1
-          fi
-        done
-        REMOTE_SERVER_ARCHES="$2"
+        if [[ "$2" == "none" ]]; then
+          REMOTE_SERVER_ARCHES=""
+        else
+          for remote_server_arch in $(IFS=, ; echo $2); do
+            if [ "$remote_server_arch" != "aarch64" -a "$remote_server_arch" != "x86_64" ]; then
+              echo "Error: Argument for $1 is invalid; got '$remote_server_arch' but expected 'aarch64' or 'x86_64'." >&2
+              exit 1
+            fi
+          done
+          REMOTE_SERVER_ARCHES="$2"
+        fi
+        REMOTE_SERVER_ARCHES_REQUESTED=true
         shift 2
       else
         echo "Error: Argument for $1 is missing" >&2
@@ -158,6 +164,13 @@ esac
 if [[ "$ARTIFACT" == "tui" && "$BUILD" == "true" && "$BUILD_ARCH" != "$HOST_ARCH" ]]; then
   echo "Error: TUI bundles must be built natively; requested '$BUILD_ARCH' on '$HOST_ARCH'." >&2
   exit 1
+fi
+
+# App bundles compile the SSH extension from this checkout and embed it, so the
+# first SSH session installs that binary. Pass --remote-server-arches none to skip.
+if [[ "$ARTIFACT" == "app" && "$BUILD" == "true" \
+  && "$REMOTE_SERVER_ARCHES_REQUESTED" != "true" ]]; then
+  REMOTE_SERVER_ARCHES="$BUILD_ARCH"
 fi
 
 # Remote-server tarballs package the static CLI build, which app bundles can then embed.

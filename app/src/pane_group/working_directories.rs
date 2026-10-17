@@ -594,6 +594,17 @@ impl WorkingDirectoriesModel {
         }
     }
 
+    /// Maps a shell-reported remote CWD onto the path the remote server indexed.
+    ///
+    /// The shell path keeps symlinks. Repo metadata and the project explorer are
+    /// keyed by the canonical path from `NavigatedToDirectory`. Refreshing with
+    /// the shell path replaces that populated root with an empty placeholder.
+    fn remote_path_for_file_tree(remote_path: &RemotePath, ctx: &AppContext) -> RemotePath {
+        RemoteServerManager::as_ref(ctx)
+            .indexed_remote_path_for_requested_path(&remote_path.host_id, &remote_path.path)
+            .unwrap_or_else(|| remote_path.clone())
+    }
+
     /// Refreshes the working directories for a pane group from terminal CWDs
     /// (both local and remote) and code editor paths.
     ///
@@ -700,7 +711,8 @@ impl WorkingDirectoriesModel {
         // and remote editor paths (resolved to repo root when possible).
         let mut new_remote_display_roots: Vec<LocalOrRemotePath> = Vec::new();
         for (_terminal_id, remote_path) in &remote_terminal_cwds {
-            let remote_key = LocalOrRemotePath::Remote(remote_path.clone());
+            let remote_path = Self::remote_path_for_file_tree(remote_path, ctx);
+            let remote_key = LocalOrRemotePath::Remote(remote_path);
             let root = DetectedRepositories::as_ref(ctx)
                 .get_root_for_path(&remote_key)
                 .unwrap_or(remote_key);
@@ -762,7 +774,8 @@ impl WorkingDirectoriesModel {
         // Resolve remote terminal CWDs to their repo roots and add to mappings.
         let mut new_remote_repo_roots: Vec<LocalOrRemotePath> = Vec::new();
         for (terminal_id, remote_path) in &remote_terminal_cwds {
-            let remote_key = LocalOrRemotePath::Remote(remote_path.clone());
+            let remote_path = Self::remote_path_for_file_tree(remote_path, ctx);
+            let remote_key = LocalOrRemotePath::Remote(remote_path);
             if let Some(repo_root) =
                 DetectedRepositories::as_ref(ctx).get_root_for_path(&remote_key)
             {

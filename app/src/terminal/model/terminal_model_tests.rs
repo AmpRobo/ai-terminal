@@ -7,6 +7,7 @@ use ai_terminal_core::features::FeatureFlag;
 use ai_terminal_terminal::model::ansi::ClearMode;
 use ai_terminal_ui::r#async::executor::Background;
 use ai_terminal_ui::text::{SelectionType, str_to_byte_vec};
+use ai_terminal_ui::units::IntoLines;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use chrono::{DateTime, Local};
 use vec1::vec1;
@@ -14,9 +15,10 @@ use vec1::vec1;
 use super::*;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::terminal::color;
+use crate::terminal::event::Event;
 use crate::terminal::event_listener::ChannelEventListener;
 use crate::terminal::model::ObfuscateSecrets;
-use crate::terminal::model::ansi::{CompletionMetadata, Handler, Processor};
+use crate::terminal::model::ansi::{ClearValue, CompletionMetadata, Handler, Processor};
 use crate::terminal::model::block::BlockId;
 use crate::terminal::model::bootstrap::BootstrapStage;
 use crate::terminal::model::grid::Dimensions as _;
@@ -108,6 +110,34 @@ fn take_typeahead_for_input_is_none_when_typeahead_is_empty() {
 
     assert_eq!(model.take_typeahead_for_input(), None);
 }
+
+#[test]
+fn clear_hook_drops_persisted_history_for_the_running_block() {
+    let (event_tx, event_rx) = async_channel::unbounded();
+    let event_proxy = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(event_tx)
+        .build();
+    let mut terminal = TerminalModel::mock(None, Some(event_proxy));
+    terminal.simulate_long_running_block("clear", "");
+    terminal
+        .block_list_mut()
+        .set_next_gap_height_in_lines(17.0.into_lines());
+    let block_id = terminal.active_block_id().clone();
+    while event_rx.try_recv().is_ok() {}
+
+    terminal.clear(ClearValue::default());
+
+    let events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::DropPersistedBlocks))
+    );
+    assert!(!terminal.take_persisted_block_drop(&BlockId::new()));
+    assert!(terminal.take_persisted_block_drop(&block_id));
+    assert!(!terminal.take_persisted_block_drop(&block_id));
+}
+
 #[test]
 fn cloud_mode_deferred_terminal_model_starts_view_pending() {
     let mut model = TerminalModel::new_for_cloud_mode_shared_session_viewer(
