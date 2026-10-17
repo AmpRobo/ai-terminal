@@ -93,19 +93,63 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 只打一种包时把 `--packages` 改成 `appimage` 或 `deb`。已有同 profile 的二进制时可以加 `--skip-build`，并保证对应的 `settings_schema.json` 还在，例如 `target/release-lto/settings_schema.json`。
 
-## 系统依赖
+## 安装依赖
 
-Debian / Ubuntu 上，编译依赖由 `script/linux/install_build_deps` 安装：`build-essential`、`cmake`、`pkg-config`、`python-is-python3`、`libssl-dev`、`libfreetype-dev`、`libexpat1-dev`、`libgit2-dev`、`libfontconfig1-dev`、`libasound2-dev`、`jq`、`brotli`、`libclang-dev`、`curl`、`git`，以及 protoc 25.1。Rust 版本以仓库根目录的 `rust-toolchain.toml` 为准。
-
-这个脚本不包含打包装进系统的工具。还需要：
+Debian / Ubuntu 上先装编译和打包用的系统包，再装 protoc 25.1 和 Rust。`dpkg-deb` 来自系统自带的 `dpkg`。下面这组命令覆盖 `script/linux/install_build_deps` 里的包，以及打包还要的 `fakeroot`、`patchelf`、`desktop-file-utils`。`unzip` 用来解开 protoc。
 
 ```bash
-sudo apt-get install -y fakeroot patchelf desktop-file-utils
+sudo apt-get update
+sudo apt-get install -y \
+  curl \
+  git \
+  unzip \
+  build-essential \
+  cmake \
+  pkg-config \
+  python-is-python3 \
+  libssl-dev \
+  libfreetype-dev \
+  libexpat1-dev \
+  libgit2-dev \
+  libfontconfig1-dev \
+  libasound2-dev \
+  jq \
+  brotli \
+  libclang-dev \
+  clang-format \
+  musl-tools \
+  fakeroot \
+  patchelf \
+  desktop-file-utils
+
+PROTOC_VERSION=25.1
+case "$(uname -m)" in
+  x86_64)  PROTOC_ZIP="protoc-${PROTOC_VERSION}-linux-x86_64.zip" ;;
+  aarch64) PROTOC_ZIP="protoc-${PROTOC_VERSION}-linux-aarch_64.zip" ;;
+  *) echo "Unsupported architecture: $(uname -m)"; exit 1 ;;
+esac
+curl -fsSL -o /tmp/protoc.zip \
+  "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/${PROTOC_ZIP}"
+sudo unzip -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+rm -f /tmp/protoc.zip
+
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"
 ```
 
-`dpkg-deb` 来自系统自带的 `dpkg`。`--install-system-deps` 会走上述官方安装脚本并补上这三件打包工具。
+仓库根目录的 `rust-toolchain.toml` 指定 Rust `1.92.0`。第一次在仓库里运行 `cargo` 时，rustup 会按这个文件安装对应工具链。
 
-`libgit2` 在 GUI 依赖里是 vendored 的，没有 `libgit2-dev` 也能编过。Linux 的 GUI 构建不会跑 macOS 那条 bindgen，因此没有 `libclang` 也能编这个包。官方安装脚本仍然会装它们。
+也可以把系统包装给打包脚本。它会调用 `script/linux/install_build_deps`，并补上 `fakeroot`、`patchelf`、`desktop-file-utils`：
+
+```bash
+AI_TERMINAL_SKIP_SUDO_PROMPT=1 ./script/build_linux_packages --install-system-deps
+```
+
+`script/install_rust` 在非 CI 环境下会交互询问。先按上面的 rustup 命令装好 Rust，这条命令就只补系统包。
+
+`linuxdeploy` 和 `cargo-about` 0.8.4 不需要 root。`./script/build_linux_packages` 会把 `linuxdeploy` 下载到 `~/.local/bin`，并用 `cargo binstall` 安装 `cargo-about`。`PATH` 里要有 `~/.local/bin` 和 `~/.cargo/bin`。
+
+`libgit2` 在 GUI 依赖里是 vendored 的，没有 `libgit2-dev` 也能编过。Linux 的 GUI 构建不会跑 macOS 那条 bindgen，因此没有 `libclang` 也能编这个包。官方安装脚本仍然会装它们。`clang-format` 和 `musl-tools` 分别用于 presubmit 的格式检查和静态链接，只打 GUI 安装包时可以不装。
 
 ## 安装和运行
 
