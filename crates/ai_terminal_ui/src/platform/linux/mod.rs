@@ -4,6 +4,7 @@ use super::AsInnerMut;
 use super::app::AppBackend;
 use crate::AppContext;
 pub use crate::windowing::winit::app::App;
+pub use crate::windowing::winit::linux::{force_x11_for_this_session, is_remote_wayland_session};
 use crate::windowing::{self, WindowingSystem};
 
 /// An extension trait defining additional configurability for

@@ -1300,8 +1300,11 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
 
         app_builder.set_window_class(ChannelState::app_id().to_string());
 
-        let force_x11 = ForceX11::read_from_preferences(prefs_for_public_settings)
-            .unwrap_or(ForceX11::default_value());
+        let stored_force_x11 = ForceX11::read_from_preferences(prefs_for_public_settings);
+        let force_x11 = linux::force_x11_for_this_session(
+            stored_force_x11.unwrap_or(ForceX11::default_value()),
+            stored_force_x11.is_some(),
+        );
         // Force use of wayland if the user has passed the `AI_TERMINAL_ENABLE_WAYLAND` env var.
         let allow_wayland = linux::is_wayland_env_var_set() || !force_x11;
         app_builder.force_x11(!allow_wayland);

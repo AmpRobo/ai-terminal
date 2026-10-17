@@ -366,6 +366,17 @@ pub(super) fn prioritize_adapters(
         .sorted_by_cached_key(adapter_supported_features)
         // Sort adapters based on low/high power preferences.
         .sorted_by_cached_key(power_preference_adapter_sort_func(gpu_power_preference))
+        // Remote X11 framebuffers (xrdp, VNC) do not display Vulkan/DRI3 presents.
+        // GLX writes the window pixmap those servers scrape, so GL outranks a
+        // higher-power Vulkan adapter. Stability still wins, and an explicit
+        // backend preference leaves this key tied.
+        .sorted_by_cached_key(|adapter| {
+            remote_x11_presentation_rank(
+                adapter.get_info().backend,
+                backend_preference,
+                remote_x11_framebuffer(windowing_system),
+            )
+        })
         // Sort adapters that we know have some issues towards the end of the list.
         .sorted_by_cached_key(|adapter| {
             adapter_stability_sort_func(
@@ -751,6 +762,46 @@ async fn initialize_device(
     }
 }
 
+/// Rank used when a remote X11 framebuffer cannot display Vulkan presents.
+///
+/// Lower is better. An explicit backend preference ties every adapter so this
+/// key does not override it.
+fn remote_x11_presentation_rank(
+    backend: wgpu::Backend,
+    backend_preference: Option<wgpu::Backend>,
+    remote_x11_framebuffer: bool,
+) -> u8 {
+    if remote_x11_framebuffer && backend_preference.is_none() && backend != wgpu::Backend::Gl {
+        1
+    } else {
+        0
+    }
+}
+
+fn remote_x11_framebuffer(windowing_system: Option<windowing::System>) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        matches!(windowing_system, Some(windowing::System::X11 { .. }))
+            && crate::windowing::winit::linux::is_remote_display_session()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+    {
+        let _ = windowing_system;
+        false
+    }
+}
+
+fn transparent_swapchain_is_visible() -> bool {
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        crate::windowing::winit::linux::transparent_presentation_works()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+    {
+        true
+    }
+}
+
 /// Returns a priority for an adapter based on backend type, to be used as a
 /// sort function.
 ///
@@ -954,9 +1005,14 @@ fn create_surface_config(
     // improve responsiveness.
     config.present_mode = PresentMode::AutoNoVsync;
 
-    // Explicitly request a non-opaque alpha compositing mode, if available.
-    // Without this, transparent surfaces don't work on native Wayland.
-    if caps
+    // A premultiplied swapchain cleared to transparent is invisible on displays
+    // that do not composite alpha (remote X11 framebuffers, no compositor).
+    // Where transparency does work, request a non-opaque mode: without it,
+    // transparent surfaces don't work on native Wayland.
+    if !transparent_swapchain_is_visible() && caps.alpha_modes.contains(&CompositeAlphaMode::Opaque)
+    {
+        config.alpha_mode = CompositeAlphaMode::Opaque;
+    } else if caps
         .alpha_modes
         .contains(&CompositeAlphaMode::PostMultiplied)
         && adapter.get_info().backend != wgpu::Backend::Dx12

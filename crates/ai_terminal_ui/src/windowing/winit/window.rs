@@ -1302,36 +1302,28 @@ fn create_window(
     tiling_window_manager: bool,
 ) -> Result<winit::window::Window> {
     let decorations = !window_options.hide_title_bar;
+    let transparent = window_transparency_is_visible(window_target);
+    if !transparent {
+        log::info!(
+            "Creating an opaque window; this display does not show transparent windows, so a \
+             transparent one would stay in the taskbar without appearing"
+        );
+    }
 
     let mut window_attributes = winit::window::WindowAttributes::default()
         .with_min_inner_size(MIN_WINDOW_SIZE)
         .with_decorations(decorations)
         .with_window_level(window_level_for_style(window_options.style))
-        .with_transparent(true);
+        .with_transparent(transparent);
 
     if let Some(title) = &window_options.title {
         window_attributes.title = title.to_owned();
     }
 
-    #[cfg_attr(
-        not(windows),
-        expect(
-            unused_mut,
-            reason = "Windows may need to ignore the requested bounds if they are off any of the \
-                displays. Linux will adjust the bounds automatically."
-        )
-    )]
     let mut window_bounds = window_options.bounds;
 
     // The monitor which has the most overlap with the new window. Will only be Some if
-    // `window_bounds` is a WindowBounds::ExactPosition.
-    #[cfg_attr(
-        not(windows),
-        expect(
-            unused,
-            reason = "Both uses of this variable are for Windows-only workarounds."
-        )
-    )]
+    // `window_bounds` is a WindowBounds::ExactPosition that intersects a monitor.
     let mut most_overlapping_monitor: Option<MonitorHandle> = None;
 
     #[cfg(windows)]
@@ -1353,23 +1345,27 @@ fn create_window(
         let icon = winit::window::Icon::from_resource(IDI_ICON, None);
         window_attributes.window_icon = icon.as_ref().ok().cloned();
         window_attributes = window_attributes.with_taskbar_icon(icon.ok());
+    }
 
-        // This is to make sure the bounds the caller is requesting intersects with any of the
-        // monitors. We only do this on Windows b/c Windows happily renders a window outside of any
-        // monitor, whereas Linux window managers automatically correct this.
-        if let WindowBounds::ExactPosition(bound_rect) = window_options.bounds {
-            most_overlapping_monitor = window_target
-                .available_monitors()
-                .filter_map(|monitor| {
-                    get_monitor_logical_bounds(&monitor)
-                        .intersection(bound_rect)
-                        .map(|rect| (monitor, rect.width() * rect.height()))
-                })
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|pair| pair.0);
-            if most_overlapping_monitor.is_none() {
-                window_bounds = WindowBounds::Default;
-            }
+    // Windows will happily map a window that lies entirely outside every monitor.
+    // Remote X11 desktops (xrdp, VNC) do the same: the taskbar lists the window
+    // and the pixels never enter the framebuffer the client is viewing.
+    if let WindowBounds::ExactPosition(bound_rect) = window_bounds {
+        most_overlapping_monitor = window_target
+            .available_monitors()
+            .filter_map(|monitor| {
+                let overlap = get_monitor_logical_bounds(&monitor).intersection(bound_rect)?;
+                let area = overlap.width() * overlap.height();
+                (area > 0.).then_some((monitor, area))
+            })
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|pair| pair.0);
+        if most_overlapping_monitor.is_none() {
+            log::info!(
+                "Requested window position is outside every monitor; letting the window manager \
+                 place the window"
+            );
+            window_bounds = WindowBounds::Default;
         }
     }
 
@@ -1436,10 +1432,18 @@ fn create_window(
         .create_window(window_attributes)
         .map_err(Into::into);
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     if let Ok(window) = created_window.as_ref() {
-        window.set_ime_allowed(true);
-        log::debug!("IME allowed on newly created Linux window");
+        #[cfg(target_os = "linux")]
+        {
+            window.set_ime_allowed(true);
+            log::debug!("IME allowed on newly created Linux window");
+        }
+        if !tiling_window_manager
+            && winit::platform::x11::ActiveEventLoopExtX11::is_x11(window_target)
+        {
+            move_window_onto_a_monitor(window);
+        }
     }
 
     #[cfg(windows)]
@@ -1750,7 +1754,75 @@ impl PhysicalSizeExt for PhysicalSize<u32> {
     }
 }
 
-#[cfg(windows)]
+#[cfg(not(target_family = "wasm"))]
+fn window_transparency_is_visible(window_target: &ActiveEventLoop) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    if winit::platform::x11::ActiveEventLoopExtX11::is_x11(window_target) {
+        return crate::windowing::winit::linux::x11_transparent_windows_are_visible();
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+    let _ = window_target;
+    true
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn move_window_onto_a_monitor(window: &winit::window::Window) {
+    if window.is_maximized() || window.fullscreen().is_some() {
+        return;
+    }
+    let Ok(position) = window.outer_position() else {
+        return;
+    };
+    let size = window.outer_size();
+    if size.width == 0 || size.height == 0 {
+        return;
+    }
+    let window_rect = RectF::new(
+        vec2f(position.x as f32, position.y as f32),
+        vec2f(size.width as f32, size.height as f32),
+    );
+    let monitors = window
+        .available_monitors()
+        .map(|monitor| {
+            let origin = monitor.position();
+            let size = monitor.size();
+            RectF::new(
+                vec2f(origin.x as f32, origin.y as f32),
+                vec2f(size.width as f32, size.height as f32),
+            )
+        })
+        .collect::<Vec<_>>();
+    if bounds_overlap_any_monitor(window_rect, &monitors) {
+        return;
+    }
+    let Some(monitor) = window
+        .primary_monitor()
+        .or_else(|| window.available_monitors().next())
+    else {
+        return;
+    };
+    let origin = monitor.position();
+    log::info!(
+        "Window is outside every monitor; moving it to ({}, {})",
+        origin.x,
+        origin.y
+    );
+    window.set_outer_position(PhysicalPosition::new(
+        origin.x.saturating_add(32),
+        origin.y.saturating_add(32),
+    ));
+}
+
+#[cfg(any(test, target_os = "linux", target_os = "freebsd"))]
+fn bounds_overlap_any_monitor(bounds: RectF, monitors: &[RectF]) -> bool {
+    monitors.iter().any(|monitor| {
+        bounds
+            .intersection(*monitor)
+            .is_some_and(|overlap| overlap.width() > 0. && overlap.height() > 0.)
+    })
+}
+
+#[cfg(not(target_family = "wasm"))]
 fn get_monitor_logical_bounds(monitor: &MonitorHandle) -> RectF {
     let scale_factor = monitor.scale_factor();
     let logical_size = monitor.size().to_logical(scale_factor);
@@ -1760,3 +1832,7 @@ fn get_monitor_logical_bounds(monitor: &MonitorHandle) -> RectF {
         Vector2F::new(logical_size.width, logical_size.height),
     )
 }
+
+#[cfg(test)]
+#[path = "window_tests.rs"]
+mod tests;

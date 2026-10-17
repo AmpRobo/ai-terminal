@@ -305,9 +305,17 @@ fn choose_crash_recovery_mechanism(
     {
         let force_x11 = settings::ForceX11::read_from_preferences(user_preferences);
         // Prioritize X11 crash recovery first. If the user has actively
-        // enabled Wayland, we want to check its stability over the case where we fallback to the
-        // integrated GPU because the user hasn't explicitly set a value.
-        if (force_x11 == Some(false)) && (std::env::var_os("WAYLAND_DISPLAY").is_some()) {
+        // enabled Wayland, or this remote login is using Wayland because
+        // XWayland windows would not appear, check that before falling back
+        // to the integrated GPU. The integrated-GPU fallback only applies
+        // when the user hasn't explicitly set a value.
+        let wayland_display_available =
+            std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty());
+        let using_wayland = wayland_display_available
+            && (force_x11 == Some(false)
+                || (force_x11.is_none()
+                    && ai_terminal_ui::platform::linux::is_remote_wayland_session()));
+        if using_wayland {
             return Some(RecoveryMechanism::X11);
         }
     }

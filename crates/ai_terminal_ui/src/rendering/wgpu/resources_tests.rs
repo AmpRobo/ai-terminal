@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn remote_x11_prefers_gl_without_overriding_an_explicit_backend() {
+    assert_eq!(
+        remote_x11_presentation_rank(wgpu::Backend::Gl, None, true),
+        0
+    );
+    assert_eq!(
+        remote_x11_presentation_rank(wgpu::Backend::Vulkan, None, true),
+        1
+    );
+    assert_eq!(
+        remote_x11_presentation_rank(wgpu::Backend::Vulkan, Some(wgpu::Backend::Vulkan), true),
+        0
+    );
+    assert_eq!(
+        remote_x11_presentation_rank(wgpu::Backend::Vulkan, None, false),
+        0
+    );
+}
+
+#[test]
 fn test_restricts_to_integrated_gpu_when_preferred_and_available() {
     let hybrid = [
         DeviceType::DiscreteGpu,

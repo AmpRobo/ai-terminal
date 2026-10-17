@@ -33,6 +33,46 @@ workarounds = [
     "rustls",
 ]
 
+# cargo-about 0.8.4 logs an error when a scanned file matches the deprecated
+# SPDX id GPL-2.0. These crates publish that text inside vendored C sources or,
+# for orbclient, the bundled Unifont license. Their own licenses are the root
+# files below; clarifying those files skips the scan.
+[orbclient.clarify]
+license = "MIT"
+[[orbclient.clarify.files]]
+path = "LICENSE"
+checksum = "3d3568e12e4408beb59fe51fd3265faa1fa7d2299f3064502a63e80ce208ca63"
+license = "MIT"
+
+[freetype-sys.clarify]
+license = "MIT"
+[[freetype-sys.clarify.files]]
+path = "LICENSE"
+checksum = "8911cb953a89daca54f0ab96616f5e447e2b1399fba7ec098872cfdacde5354b"
+license = "MIT"
+
+[lzma-sys.clarify]
+license = "MIT OR Apache-2.0"
+[[lzma-sys.clarify.files]]
+path = "LICENSE-APACHE"
+checksum = "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+license = "Apache-2.0"
+[[lzma-sys.clarify.files]]
+path = "LICENSE-MIT"
+checksum = "69036b033e4bb951821964dbc3d9b1efe6913a6e36d9c1f206de4035a1a85cc4"
+license = "MIT"
+
+[zstd-sys.clarify]
+license = "MIT OR Apache-2.0"
+[[zstd-sys.clarify.files]]
+path = "LICENSE.Apache-2.0"
+checksum = "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+license = "Apache-2.0"
+[[zstd-sys.clarify.files]]
+path = "LICENSE.Mit"
+checksum = "129e8edef29e9abcd2ebabe252f4ef1b1289cdca356bf0040284a2fbccfb96c8"
+license = "MIT"
+
 # These are AI Terminal's own private crates, sourced via git from the warpdotdev
 # organization. They are not part of this workspace and do not have explicit
 # licenses yet (they will be open-sourced soon). cargo-about will skip them
