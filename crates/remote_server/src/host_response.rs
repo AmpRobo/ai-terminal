@@ -71,6 +71,26 @@ pub fn delete_file_result(msg: &ServerMessage) -> Result<(), String> {
     )
 }
 
+/// Interprets a [`ServerMessage`] as the result of a `RenamePath` request.
+pub fn rename_path_result(msg: &ServerMessage) -> Result<(), String> {
+    file_op_result!(
+        msg,
+        server_message::Message::RenamePathResponse,
+        crate::proto::rename_path_response::Result,
+        "RenamePath"
+    )
+}
+
+/// Interprets a [`ServerMessage`] as the result of a `DeletePath` request.
+pub fn delete_path_result(msg: &ServerMessage) -> Result<(), String> {
+    file_op_result!(
+        msg,
+        server_message::Message::DeletePathResponse,
+        crate::proto::delete_path_response::Result,
+        "DeletePath"
+    )
+}
+
 /// Interprets a [`ServerMessage`] as the result of a `DiscardFiles` request.
 pub fn discard_files_result(msg: &ServerMessage) -> Result<(), String> {
     file_op_result!(

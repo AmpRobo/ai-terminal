@@ -1650,6 +1650,71 @@ impl GlobalBufferModel {
         self.location_to_id.get_by_left(&location).copied()
     }
 
+    /// Moves a server-local buffer's path key to `new_path`, keeping the same `FileId`.
+    pub fn retarget_local_location(&mut self, file_id: FileId, new_path: PathBuf) -> bool {
+        if self.location_to_id.remove_by_right(&file_id).is_none() {
+            return false;
+        }
+        let _ = self
+            .location_to_id
+            .insert(LocalOrRemotePath::Local(new_path), file_id);
+        true
+    }
+
+    /// Rewrites remote buffer paths after a project-explorer rename on `host_id`.
+    ///
+    /// The renamed path and every open descendant move together so later saves
+    /// and buffer edits address the new location.
+    pub fn retarget_remote_paths(
+        &mut self,
+        host_id: &HostId,
+        old_path: &str,
+        new_path: &str,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let updates: Vec<(FileId, String)> = self
+            .location_to_id
+            .iter()
+            .filter_map(|(location, file_id)| {
+                let LocalOrRemotePath::Remote(remote) = location else {
+                    return None;
+                };
+                if &remote.host_id != host_id {
+                    return None;
+                }
+                let mapped = crate::code::remote_fs_path::path_after_rename(
+                    remote.path.as_str(),
+                    old_path,
+                    new_path,
+                )?;
+                Some((*file_id, mapped))
+            })
+            .collect();
+
+        for (file_id, mapped) in updates {
+            let Ok(std_path) = StandardizedPath::try_new(&mapped) else {
+                continue;
+            };
+            let new_location =
+                LocalOrRemotePath::Remote(RemotePath::new(host_id.clone(), std_path.clone()));
+            self.location_to_id.remove_by_right(&file_id);
+            let _ = self.location_to_id.insert(new_location, file_id);
+            if let Some(state) = self.buffers.get_mut(&file_id)
+                && let BufferSource::Remote { remote_path, .. } = &mut state.source
+            {
+                remote_path.path = std_path.clone();
+            }
+            #[cfg(feature = "local_fs")]
+            FileModel::handle(ctx).update(ctx, |model, _| {
+                model.retarget_remote_path(file_id, std_path);
+            });
+            #[cfg(not(feature = "local_fs"))]
+            {
+                let _ = (ctx, std_path);
+            }
+        }
+    }
+
     // ── Remote buffer operations ──────────────────────────────────────
 
     /// Open a remote buffer identified by a `RemotePath`.

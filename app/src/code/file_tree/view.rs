@@ -6,7 +6,7 @@ use std::sync::Arc;
 use ai_terminal_core::features::FeatureFlag;
 use ai_terminal_core::ui::theme::Fill;
 use ai_terminal_core::ui::theme::color::internal_colors;
-use ai_terminal_core::{HostId, send_telemetry_from_ctx};
+use ai_terminal_core::{HostId, safe_warn, send_telemetry_from_ctx};
 use ai_terminal_ui::clipboard::ClipboardContent;
 use ai_terminal_ui::elements::{
     AcceptedByDropTarget, Align, ChildAnchor, ChildView, Clipped, ConstrainedBox, Container,
@@ -53,15 +53,15 @@ use crate::ui_components::icons::Icon;
 use crate::ui_components::item_highlight::{ImageOrIcon, ItemHighlightState};
 #[cfg(feature = "local_fs")]
 use crate::util::file::external_editor::EditorSettings;
-use crate::util::openable_file_type::{
-    EditorLayout, FileTarget, is_file_content_binary, is_jupyter_notebook_file, is_markdown_file,
-};
+use crate::util::openable_file_type::{EditorLayout, FileTarget, is_file_content_binary};
 #[cfg(feature = "local_fs")]
 use crate::util::openable_file_type::{
     resolve_file_target_to_open_in_ai_terminal, resolve_file_target_with_editor_choice,
 };
 
 mod editing;
+mod menu_plan;
+mod remote_actions;
 mod render;
 
 use crate::settings::{CodeSettings, CodeSettingsChangedEvent};
@@ -2266,29 +2266,11 @@ impl FileTreeView {
                             host_id.clone(),
                             (*metadata.path).clone(),
                         );
-                        let path_str = metadata.path.as_str();
-                        let remote_file_path = Path::new(path_str);
-                        let target = if is_jupyter_notebook_file(remote_file_path)
-                            && FeatureFlag::JupyterNotebookRendering.is_enabled()
-                        {
-                            FileTarget::MarkdownViewer(EditorLayout::SplitPane)
-                        } else if is_markdown_file(remote_file_path) {
-                            #[cfg(feature = "local_fs")]
-                            {
-                                let prefer_md = *EditorSettings::as_ref(ctx).prefer_markdown_viewer;
-                                if prefer_md {
-                                    FileTarget::MarkdownViewer(EditorLayout::SplitPane)
-                                } else {
-                                    FileTarget::CodeEditor(EditorLayout::SplitPane)
-                                }
-                            }
-                            #[cfg(not(feature = "local_fs"))]
-                            {
-                                FileTarget::CodeEditor(EditorLayout::SplitPane)
-                            }
-                        } else {
-                            FileTarget::CodeEditor(EditorLayout::SplitPane)
-                        };
+                        let target = remote_actions::remote_file_target(
+                            Path::new(metadata.path.as_str()),
+                            EditorLayout::SplitPane,
+                            ctx,
+                        );
                         ctx.emit(FileTreeEvent::OpenFile {
                             path: LocalOrRemotePath::Remote(remote_path),
                             target,
@@ -2326,128 +2308,80 @@ impl FileTreeView {
         ctx.notify();
     }
 
-    /// Creates menu items for the context menu based on the current item
+    /// Creates menu items for the context menu based on the current item.
     fn context_menu_items(
         &self,
         item: &FileTreeItem,
         id: &FileTreeIdentifier,
     ) -> Vec<MenuItem<FileTreeAction>> {
         let is_remote = self.is_remote_item(id);
+        let is_directory = matches!(item, FileTreeItem::DirectoryHeader { .. });
+        let is_binary_file = !is_remote
+            && !is_directory
+            && is_file_content_binary(item.path().to_local_path_lossy());
+        menu_plan::menu_entries(&menu_plan::MenuQuery {
+            is_directory,
+            is_remote,
+            // The root repo is always index 0, so it cannot be renamed or deleted.
+            is_repo_root: id.index == 0,
+            has_terminal_session: self.has_terminal_session,
+            is_binary_file,
+        })
+        .into_iter()
+        .map(|entry| self.menu_item_for_entry(entry, id))
+        .collect()
+    }
 
-        let mut items = vec![];
-
-        if is_remote {
-            // Remote file trees only support a limited set of actions:
-            // copying paths and attaching as context. File opening,
-            // creation, rename, delete, cd, and reveal are unavailable
-            // because there is no local filesystem or editor support.
-        } else {
-            match item {
-                FileTreeItem::File { .. } => {
-                    let path_local = item.path().to_local_path_lossy();
-                    if !is_file_content_binary(&path_local) {
-                        items.extend([
-                            MenuItemFields::new("Open in new pane")
-                                .with_on_select_action(FileTreeAction::OpenInNewPane {
-                                    id: id.clone(),
-                                })
-                                .into_item(),
-                            MenuItemFields::new("Open in new tab")
-                                .with_on_select_action(FileTreeAction::OpenInNewTab {
-                                    id: id.clone(),
-                                })
-                                .into_item(),
-                        ]);
-                    } else {
-                        items.push(
-                            MenuItemFields::new("Open file")
-                                .with_on_select_action(FileTreeAction::ItemClicked {
-                                    id: id.clone(),
-                                })
-                                .into_item(),
-                        );
-                    }
-                }
-                FileTreeItem::DirectoryHeader { .. } => {
-                    items.push(
-                        MenuItemFields::new("New file")
-                            .with_on_select_action(FileTreeAction::NewFileBelowDirectory {
-                                id: id.clone(),
-                            })
-                            .into_item(),
-                    );
-                    items.push(MenuItem::Separator);
-                    if self.has_terminal_session {
-                        items.push(
-                            MenuItemFields::new("cd to directory")
-                                .with_on_select_action(FileTreeAction::CDToDirectory {
-                                    id: id.clone(),
-                                })
-                                .into_item(),
-                        );
-                    }
-                    items.push(
-                        MenuItemFields::new("Open in new tab")
-                            .with_on_select_action(FileTreeAction::OpenInNewTab { id: id.clone() })
-                            .into_item(),
-                    );
-                }
-            };
-
-            let open_text = if cfg!(target_os = "macos") {
-                "Reveal in Finder"
-            } else if cfg!(target_os = "windows") {
-                "Reveal in Explorer"
-            } else {
-                "Reveal in file manager"
-            };
-            items.push(
-                MenuItemFields::new(open_text)
+    fn menu_item_for_entry(
+        &self,
+        entry: menu_plan::MenuEntry,
+        id: &FileTreeIdentifier,
+    ) -> MenuItem<FileTreeAction> {
+        match entry {
+            menu_plan::MenuEntry::OpenInNewPane => MenuItemFields::new("Open in new pane")
+                .with_on_select_action(FileTreeAction::OpenInNewPane { id: id.clone() })
+                .into_item(),
+            menu_plan::MenuEntry::OpenInNewTab => MenuItemFields::new("Open in new tab")
+                .with_on_select_action(FileTreeAction::OpenInNewTab { id: id.clone() })
+                .into_item(),
+            menu_plan::MenuEntry::OpenFile => MenuItemFields::new("Open file")
+                .with_on_select_action(FileTreeAction::ItemClicked { id: id.clone() })
+                .into_item(),
+            menu_plan::MenuEntry::NewFile => MenuItemFields::new("New file")
+                .with_on_select_action(FileTreeAction::NewFileBelowDirectory { id: id.clone() })
+                .into_item(),
+            menu_plan::MenuEntry::CdToDirectory => MenuItemFields::new("cd to directory")
+                .with_on_select_action(FileTreeAction::CDToDirectory { id: id.clone() })
+                .into_item(),
+            menu_plan::MenuEntry::Reveal => {
+                let label = if cfg!(target_os = "macos") {
+                    "Reveal in Finder"
+                } else if cfg!(target_os = "windows") {
+                    "Reveal in Explorer"
+                } else {
+                    "Reveal in file manager"
+                };
+                MenuItemFields::new(label)
                     .with_on_select_action(FileTreeAction::OpenInFinder { id: id.clone() })
-                    .into_item(),
-            );
-
-            // For now, the root repo is always the zero index. This may not always be the case if we allow
-            // multiple repos in a project view, for instance. This disallows deletion/renaming of the root repo.
-            let is_repo_root_dir = id.index == 0;
-            if !is_repo_root_dir {
-                items.push(
-                    MenuItemFields::new("Rename")
-                        .with_on_select_action(FileTreeAction::Rename { id: id.clone() })
-                        .into_item(),
-                );
-                items.push(
-                    MenuItemFields::new("Delete")
-                        .with_on_select_action(FileTreeAction::Delete { id: id.clone() })
-                        .into_item(),
-                );
+                    .into_item()
             }
-        }
-
-        if self.has_terminal_session {
-            if !items.is_empty() {
-                items.push(MenuItem::Separator);
-            }
-            items.push(
-                MenuItemFields::new("Attach as context")
-                    .with_on_select_action(FileTreeAction::AttachAsContext { id: id.clone() })
-                    .into_item(),
-            );
-        }
-
-        if !items.is_empty() {
-            items.push(MenuItem::Separator);
-        }
-        items.extend([
-            MenuItemFields::new("Copy path")
+            menu_plan::MenuEntry::Rename => MenuItemFields::new("Rename")
+                .with_on_select_action(FileTreeAction::Rename { id: id.clone() })
+                .into_item(),
+            menu_plan::MenuEntry::Delete => MenuItemFields::new("Delete")
+                .with_on_select_action(FileTreeAction::Delete { id: id.clone() })
+                .into_item(),
+            menu_plan::MenuEntry::AttachAsContext => MenuItemFields::new("Attach as context")
+                .with_on_select_action(FileTreeAction::AttachAsContext { id: id.clone() })
+                .into_item(),
+            menu_plan::MenuEntry::CopyPath => MenuItemFields::new("Copy path")
                 .with_on_select_action(FileTreeAction::CopyPath { id: id.clone() })
                 .into_item(),
-            MenuItemFields::new("Copy relative path")
+            menu_plan::MenuEntry::CopyRelativePath => MenuItemFields::new("Copy relative path")
                 .with_on_select_action(FileTreeAction::CopyRelativePath { id: id.clone() })
                 .into_item(),
-        ]);
-
-        items
+            menu_plan::MenuEntry::Separator => MenuItem::Separator,
+        }
     }
 
     /// Returns the repository root for a specific root directory path.
@@ -2521,14 +2455,15 @@ impl FileTreeView {
     }
 
     fn open_in_new_tab(&mut self, id: &FileTreeIdentifier, ctx: &mut ViewContext<Self>) {
-        let Some(root_dir) = self.root_directories.get(&id.root) else {
+        let Some((is_remote, host_id, path, is_directory)) = self.item_open_info(id) else {
             return;
         };
-        let Some(item) = root_dir.items.get(id.index) else {
+        if is_remote {
+            self.open_remote_in_new_tab(host_id, &path, is_directory, ctx);
             return;
-        };
+        }
 
-        let path = item.path().to_local_path_lossy();
+        let path = path.to_local_path_lossy();
         if path.is_dir() {
             ctx.emit(FileTreeEvent::OpenDirectoryInNewTab { path: path.clone() });
         } else {
@@ -2536,16 +2471,50 @@ impl FileTreeView {
         }
     }
 
+    fn item_open_info(
+        &self,
+        id: &FileTreeIdentifier,
+    ) -> Option<(bool, Option<HostId>, StandardizedPath, bool)> {
+        let root_dir = self.root_directories.get(&id.root)?;
+        let item = root_dir.items.get(id.index)?;
+        Some((
+            root_dir.is_remote(),
+            root_dir.remote_host_id.clone(),
+            item.path().clone(),
+            matches!(item, FileTreeItem::DirectoryHeader { .. }),
+        ))
+    }
+
     fn cd_to_directory(&mut self, id: &FileTreeIdentifier, ctx: &mut ViewContext<Self>) {
-        let Some(root_dir) = self.root_directories.get(&id.root) else {
-            return;
-        };
-        let Some(item) = root_dir.items.get(id.index) else {
-            return;
+        let (is_remote, path, is_directory) = {
+            let Some(root_dir) = self.root_directories.get(&id.root) else {
+                return;
+            };
+            let Some(item) = root_dir.items.get(id.index) else {
+                return;
+            };
+            (
+                root_dir.is_remote(),
+                item.path().clone(),
+                matches!(item, FileTreeItem::DirectoryHeader { .. }),
+            )
         };
 
-        let path = item.path().to_local_path_lossy();
+        if is_remote {
+            if !is_directory {
+                safe_warn!(
+                    safe: ("cd to directory called on a remote file"),
+                    full: ("cd to directory called on remote path {}", path.as_str())
+                );
+                return;
+            }
+            ctx.emit(FileTreeEvent::CDToDirectory {
+                path: PathBuf::from(path.as_str()),
+            });
+            return;
+        }
 
+        let path = path.to_local_path_lossy();
         if !path.is_dir() {
             log::warn!(
                 "CDToDirectory called on non-directory path: {}",
@@ -2569,6 +2538,11 @@ impl FileTreeView {
     }
 
     fn delete_item(&mut self, id: &FileTreeIdentifier, ctx: &mut ViewContext<Self>) {
+        if self.is_remote_item(id) {
+            #[cfg(feature = "local_fs")]
+            self.delete_remote_item(id, ctx);
+            return;
+        }
         let Some(root_dir) = self.root_directories.get(&id.root) else {
             return;
         };
@@ -2934,6 +2908,16 @@ pub enum FileTreeEvent {
     CDToDirectory { path: PathBuf },
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
     OpenDirectoryInNewTab { path: PathBuf },
+    #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+    OpenRemoteDirectoryInNewTab { path: String },
+    #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+    RemoteFileRenamed {
+        host_id: HostId,
+        old_path: String,
+        new_path: String,
+    },
+    #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+    RemoteFileDeleted { host_id: HostId, path: String },
 }
 
 impl Entity for FileTreeView {
@@ -3111,14 +3095,10 @@ impl TypedActionView for FileTreeView {
                 }
             }
             FileTreeAction::OpenInNewTab { id } => {
-                if !self.is_remote_item(id) {
-                    self.open_in_new_tab(id, ctx);
-                }
+                self.open_in_new_tab(id, ctx);
             }
             FileTreeAction::CDToDirectory { id } => {
-                if !self.is_remote_item(id) {
-                    self.cd_to_directory(id, ctx);
-                }
+                self.cd_to_directory(id, ctx);
                 self.context_menu_state.take();
             }
             FileTreeAction::OpenInFinder { id } => {
@@ -3132,15 +3112,11 @@ impl TypedActionView for FileTreeView {
                 self.context_menu_state.take();
             }
             FileTreeAction::Rename { id } => {
-                if !self.is_remote_item(id) {
-                    self.rename_item(id, ctx);
-                }
+                self.rename_item(id, ctx);
                 self.context_menu_state.take();
             }
             FileTreeAction::Delete { id } => {
-                if !self.is_remote_item(id) {
-                    self.delete_item(id, ctx);
-                }
+                self.delete_item(id, ctx);
                 self.context_menu_state.take();
             }
             FileTreeAction::DismissEditor => {

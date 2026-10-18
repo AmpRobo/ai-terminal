@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::path::Path;
 
 use lazy_static::lazy_static;
@@ -98,46 +99,12 @@ impl InteractiveSshCommand {
             command
         };
         let tokens = parse_ssh_command_tokens(command)?;
-        let mut host: Option<String> = None;
-        let mut port: Option<String> = None;
-
-        let mut i = 1;
-        while i < tokens.len() {
-            match tokens[i].as_str() {
-                // -T or -W imply a non-interactive session.
-                "-T" | "-W" => return None,
-
-                "-p" => {
-                    i += 1;
-                    if i < tokens.len() {
-                        port = Some(tokens[i].clone());
-                    } else {
-                        return None;
-                    }
-                }
-
-                // SSH option that doesn't change interactivity and require an argument: Skip the next item.
-                "-B" | "-b" | "-c" | "-D" | "-E" | "-e" | "-F" | "-I" | "-i" | "-J" | "-L"
-                | "-l" | "-m" | "-O" | "-o" | "-P" | "-Q" | "-R" | "-S" | "-w" => {
-                    i += 1;
-                }
-
-                // SSH option(s) that don't change interactivity.
-                arg if arg.starts_with('-') => {}
-
-                // Otherwise, it's a positional argument (e.g., hostname, command to run)
-                pos_arg => {
-                    // If we detect multiple positional args, there's some type of unknown command formulation.
-                    if host.is_some() {
-                        return None;
-                    }
-                    host = Some(pos_arg.to_string());
-                }
-            }
-            i += 1;
-        }
-
-        Some(InteractiveSshCommand { host, port })
+        let invocation = parse_ssh_invocation(&tokens)?;
+        let host = invocation.host_index.map(|index| tokens[index].clone());
+        Some(InteractiveSshCommand {
+            host,
+            port: invocation.port,
+        })
     }
 }
 
@@ -229,6 +196,89 @@ fn parse_ssh_command_tokens(command: &str) -> Option<Vec<String>> {
     Some(tokens)
 }
 
+struct SshInvocation {
+    host_index: Option<usize>,
+    port: Option<String>,
+    uses_jump_host: bool,
+}
+
+fn parse_ssh_invocation(tokens: &[String]) -> Option<SshInvocation> {
+    let mut host_index = None;
+    let mut port = None;
+    let mut uses_jump_host = false;
+    let mut i = 1;
+    while i < tokens.len() {
+        let arg = tokens[i].as_str();
+        if ssh_arg_uses_jump_host(arg, tokens.get(i + 1).map(String::as_str)) {
+            uses_jump_host = true;
+        }
+        match arg {
+            // -T or -W imply a non-interactive session.
+            "-T" | "-W" => return None,
+
+            "-p" => {
+                i += 1;
+                if i < tokens.len() {
+                    port = Some(tokens[i].clone());
+                } else {
+                    return None;
+                }
+            }
+
+            // SSH option that doesn't change interactivity and require an argument: Skip the next item.
+            "-B" | "-b" | "-c" | "-D" | "-E" | "-e" | "-F" | "-I" | "-i" | "-J" | "-L" | "-l"
+            | "-m" | "-O" | "-o" | "-P" | "-Q" | "-R" | "-S" | "-w" => {
+                i += 1;
+            }
+
+            // SSH option(s) that don't change interactivity.
+            arg if arg.starts_with('-') => {}
+
+            // Otherwise, it's a positional argument (e.g., hostname, command to run).
+            // A second positional is a remote command, which we must not append to.
+            _ => {
+                if host_index.is_some() {
+                    return None;
+                }
+                host_index = Some(i);
+            }
+        }
+        i += 1;
+    }
+
+    Some(SshInvocation {
+        host_index,
+        port,
+        uses_jump_host,
+    })
+}
+
+fn ssh_arg_uses_jump_host(arg: &str, next: Option<&str>) -> bool {
+    let lower = arg.to_ascii_lowercase();
+    if lower == "-j" || lower.contains("proxyjump") || lower.contains("proxycommand") {
+        return true;
+    }
+    matches!(arg, "-o" | "-J")
+        && next.is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value.starts_with("proxyjump") || value.starts_with("proxycommand")
+        })
+}
+
+/// `true` when `command` reaches the destination through a jump host.
+///
+/// The local TCP peer of that session is the jump host, not the destination.
+pub fn ssh_uses_jump_host(command: &str) -> bool {
+    let command = if let Some(suffix) = command.strip_prefix("command ") {
+        suffix
+    } else {
+        command
+    };
+    parse_ssh_command_tokens(command)
+        .and_then(|tokens| parse_ssh_invocation(&tokens))
+        .is_some_and(|invocation| invocation.uses_jump_host)
+}
+
 /// Creates an sftp command that copies a given local file into the pwd in the ai_terminalified ssh session.
 pub fn transfer_file_sftp_command(
     local_file_path: String,
@@ -269,6 +319,131 @@ pub fn transfer_file_sftp_command(
     command += "\"";
 
     Some(command)
+}
+
+/// Remote command that starts a login shell after `cd` into `directory`.
+fn remote_login_shell(directory: &str) -> String {
+    format!("cd {} && exec \"$SHELL\" -l", shell_words::quote(directory))
+}
+
+/// Host part of an `ssh` destination (`user@host`, `[ipv6]`, or a bare host).
+pub fn destination_hostname(destination: &str) -> &str {
+    let host = match destination.rsplit_once('@') {
+        Some((user, host)) if !user.is_empty() && !host.is_empty() => host,
+        _ => destination,
+    };
+    host.strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
+/// `true` when `host` is an IP address, including a `user@ip` destination.
+pub fn hostname_is_ip(host: &str) -> bool {
+    let host = destination_hostname(host);
+    !host.is_empty() && host.parse::<IpAddr>().is_ok()
+}
+
+fn bracket_ipv6(host: &str) -> String {
+    if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
+fn token_is_host_key_alias(token: &str) -> bool {
+    let token = token.to_ascii_lowercase();
+    token == "hostkeyalias" || token.starts_with("hostkeyalias=")
+}
+
+fn rewrite_destination_token(token: &str, new_host: &str) -> String {
+    let new_host = bracket_ipv6(new_host);
+    match token.rsplit_once('@') {
+        Some((user, host)) if !user.is_empty() && !host.is_empty() => {
+            format!("{user}@{new_host}")
+        }
+        _ => new_host,
+    }
+}
+
+/// Rewrites a literal `ssh` command so the remote shell starts in `directory`.
+///
+/// Returns `None` when `spawning_command` is not an interactive `ssh` we can
+/// append a remote command to (for example `gcloud compute ssh`, or an `ssh`
+/// that already has a remote command).
+pub fn ssh_command_starting_in_directory(
+    spawning_command: &str,
+    directory: &str,
+) -> Option<String> {
+    ssh_command_starting_in_directory_with_host(spawning_command, directory, None)
+}
+
+/// Like [`ssh_command_starting_in_directory`], replacing the destination
+/// hostname with `host_override` when that address should be dialed directly.
+///
+/// `host_override` is ignored for jump-host commands, because the local TCP
+/// peer is the jump host, and when the destination is already an IP address.
+pub fn ssh_command_starting_in_directory_with_host(
+    spawning_command: &str,
+    directory: &str,
+    host_override: Option<&str>,
+) -> Option<String> {
+    let command = spawning_command
+        .strip_prefix("command ")
+        .unwrap_or(spawning_command)
+        .trim();
+    let tokens = parse_ssh_command_tokens(command)?;
+    let invocation = parse_ssh_invocation(&tokens)?;
+    let host_index = invocation.host_index?;
+    if tokens[host_index].is_empty() {
+        return None;
+    }
+    let replace_host = host_override
+        .map(str::trim)
+        .filter(|override_host| !override_host.is_empty())
+        .filter(|_| !hostname_is_ip(&tokens[host_index]) && !invocation.uses_jump_host);
+    let command = if let Some(override_host) = replace_host {
+        let mut tokens = tokens;
+        // The known_hosts entry is for the name the user dialed. HostKeyAlias
+        // keeps that check when the dialed address is the connection's IP.
+        let alias = destination_hostname(&tokens[host_index]).to_string();
+        tokens[host_index] = rewrite_destination_token(&tokens[host_index], override_host);
+        if !alias.is_empty() && !tokens.iter().any(|token| token_is_host_key_alias(token)) {
+            tokens.insert(host_index, format!("HostKeyAlias={alias}"));
+            tokens.insert(host_index, "-o".to_string());
+        }
+        shell_words::join(tokens)
+    } else {
+        command.to_string()
+    };
+    let remote = remote_login_shell(directory);
+    Some(format!("{command} -t {}", shell_words::quote(&remote)))
+}
+
+/// Builds an `ssh -t` command that starts a login shell in `directory`.
+pub fn ssh_command_for_endpoint(
+    user: &str,
+    host: &str,
+    port: Option<&str>,
+    directory: &str,
+) -> String {
+    let remote = remote_login_shell(directory);
+    let mut command = String::from("ssh");
+    if let Some(port) = port.filter(|port| !port.is_empty()) {
+        command.push_str(" -p ");
+        command.push_str(&shell_words::quote(port));
+    }
+    command.push(' ');
+    let host = bracket_ipv6(host);
+    let destination = if user.is_empty() {
+        host
+    } else {
+        format!("{user}@{host}")
+    };
+    command.push_str(&shell_words::quote(&destination));
+    command.push_str(" -t ");
+    command.push_str(&shell_words::quote(&remote));
+    command
 }
 
 #[cfg(test)]

@@ -1066,6 +1066,14 @@ impl Session {
         )
     }
 
+    /// ControlMaster socket for a session started by the SSH wrapper.
+    pub fn ssh_control_socket_path(&self) -> Option<&Path> {
+        match &self.info.is_ssh_wrapper_session {
+            IsSSHWrapperSession::Yes { socket_path, .. } => Some(socket_path.as_path()),
+            IsSSHWrapperSession::No => None,
+        }
+    }
+
     pub fn is_subshell_or_ssh(&self) -> bool {
         matches!(
             self.session_type(),

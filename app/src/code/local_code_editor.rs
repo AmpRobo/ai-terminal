@@ -39,6 +39,7 @@ use ai_terminal_util::file::{FileId, FileLoadError, FileSaveError};
 #[cfg(feature = "local_fs")]
 use ai_terminal_util::local_or_remote_path::LocalOrRemotePath;
 use ai_terminal_util::path::to_relative_path;
+use ai_terminal_util::remote_path::RemotePath;
 use ai_terminal_util::sync::Condition;
 use futures::stream::AbortHandle;
 use lsp::types::FileLocation;
@@ -1884,6 +1885,17 @@ impl LocalCodeEditorView {
     /// Returns the unified file location (local or remote).
     pub fn file_location(&self) -> Option<&BufferFileLocation> {
         self.metadata.as_ref().map(|m| &m.location)
+    }
+
+    /// Points this editor at `new_path` after a remote project-explorer rename.
+    pub fn retarget_remote_location(&mut self, new_path: RemotePath, ctx: &mut ViewContext<Self>) {
+        let path_string = new_path.path.as_str().to_string();
+        if let Some(metadata) = self.metadata.as_mut() {
+            metadata.location = BufferFileLocation::Remote(new_path);
+        }
+        self.editor.update(ctx, |editor, ctx| {
+            editor.set_language_with_local_path(Path::new(&path_string), ctx);
+        });
     }
 
     /// Returns the local path if this editor is backed by a local file.

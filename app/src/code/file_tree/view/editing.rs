@@ -202,6 +202,11 @@ impl FileTreeView {
                 self.rebuild_flattened_items();
             }
             PendingEditKind::RenameExisting => {
+                if self.is_remote_item(&file_tree_id) {
+                    #[cfg(feature = "local_fs")]
+                    self.commit_remote_rename(&file_tree_id, &buffer_content, ctx);
+                    return;
+                }
                 let Some(root_dir) = self.root_directories.get(&file_tree_id.root) else {
                     return;
                 };

@@ -151,6 +151,8 @@ fn every_host_scoped_request_has_a_response_disposition() {
             M::WriteFile(_) => "host_response::write_file_result",
             M::SaveBuffer(_) => "host_response::save_buffer_result",
             M::DeleteFile(_) => "host_response::delete_file_result",
+            M::RenamePath(_) => "host_response::rename_path_result",
+            M::DeletePath(_) => "host_response::delete_path_result",
             M::DiscardFiles(_) => "host_response::discard_files_result",
             // Richer responses parsed at the manager call site.
             M::ReadFileContext(_) => "manager::read_file_context",

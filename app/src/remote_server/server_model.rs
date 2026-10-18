@@ -12,7 +12,7 @@ use ::ai::index::full_source_code_embedding::{
 };
 use ::ai::project_context::model::{ProjectContextModel, ProjectContextModelEvent};
 use ai_terminal_core::channel::ChannelState;
-use ai_terminal_core::{SessionId, safe_error};
+use ai_terminal_core::{SessionId, safe_error, safe_warn};
 use ai_terminal_files::{FileModel, FileModelEvent};
 use ai_terminal_ui::r#async::{Spawnable, SpawnableOutput, SpawnedFutureHandle};
 use ai_terminal_ui::platform::TerminationMode;
@@ -37,9 +37,10 @@ use super::proto::{
     Abort, Authenticate, BranchInfo, BufferEdit, BufferUpdatedPush, ClientMessage, CloseBuffer,
     CodebaseIndexLimits, CodebaseIndexStatus, CodebaseIndexStatusUpdated,
     CodebaseIndexStatusesSnapshot, CodebaseResyncMode, DeleteFile, DeleteFileResponse,
-    DeleteFileSuccess, DiscardFilesError, DiscardFilesResponse, DiscardFilesSuccess,
-    DropCodebaseIndex, ErrorCode, ErrorResponse, FailedFileRead, FileContextProto,
-    FileOperationError, FragmentMetadata as ProtoFragmentMetadata,
+    DeleteFileSuccess, DeletePath, DeletePathResponse, DeletePathSuccess, DiscardFilesError,
+    DiscardFilesResponse, DiscardFilesSuccess, DropCodebaseIndex, ErrorCode, ErrorResponse,
+    FailedFileRead, FileContextProto, FileOperationError,
+    FragmentMetadata as ProtoFragmentMetadata,
     FragmentMetadataLookupError as ProtoFragmentMetadataLookupError,
     FragmentMetadataLookupErrorCode, GetBranchesError, GetBranchesResponse, GetBranchesSuccess,
     GetDiffStateResponse, GetFragmentMetadataFromHash, GetFragmentMetadataFromHashResponse,
@@ -51,17 +52,19 @@ use super::proto::{
     GitOpError, GitPushRequest, GitPushResponse, GitStatusPush, HomeSkillMetadata, IndexCodebase,
     Initialize, InitializeResponse, MissingFragmentMetadata, NavigatedToDirectory,
     NavigatedToDirectoryResponse, OpenBuffer, OpenBufferResponse, ReadFileContextResponse,
-    RemoteAgentContextSnapshot, RemoteContextFileProto, RemoteSkillProto, ResolveConflict,
-    ResolveConflictResponse, ResolveConflictSuccess, ResyncCodebase, RipgrepSearchRequest,
-    RunCommandError, RunCommandErrorCode, RunCommandRequest, RunCommandResponse, RunCommandSuccess,
-    SaveBuffer, SaveBufferResponse, SaveBufferSuccess, ServerMessage, SessionBootstrapped,
-    TextEdit, UpdateGitHubPrInfo, UpdateGitHubRepoInfo, UpdateGitStatus, UploadHandoffSnapshot,
-    WriteFile, WriteFileResponse, WriteFileSuccess, client_message, delete_file_response,
-    discard_files_response, get_diff_state_response, get_fragment_metadata_from_hash_response,
-    git_commit_chain_response, git_create_pr_response, git_generate_commit_message_response,
-    git_get_committed_branch_files_response, git_push_response, host_scoped_request, notification,
-    remote_skill_proto, resolve_conflict_response, run_command_response, save_buffer_response,
-    server_message, session_scoped_request, write_file_response,
+    RemoteAgentContextSnapshot, RemoteContextFileProto, RemoteSkillProto, RenamePath,
+    RenamePathResponse, RenamePathSuccess, ResolveConflict, ResolveConflictResponse,
+    ResolveConflictSuccess, ResyncCodebase, RipgrepSearchRequest, RunCommandError,
+    RunCommandErrorCode, RunCommandRequest, RunCommandResponse, RunCommandSuccess, SaveBuffer,
+    SaveBufferResponse, SaveBufferSuccess, ServerMessage, SessionBootstrapped, TextEdit,
+    UpdateGitHubPrInfo, UpdateGitHubRepoInfo, UpdateGitStatus, UploadHandoffSnapshot, WriteFile,
+    WriteFileResponse, WriteFileSuccess, client_message, delete_file_response,
+    delete_path_response, discard_files_response, get_diff_state_response,
+    get_fragment_metadata_from_hash_response, git_commit_chain_response, git_create_pr_response,
+    git_generate_commit_message_response, git_get_committed_branch_files_response,
+    git_push_response, host_scoped_request, notification, remote_skill_proto, rename_path_response,
+    resolve_conflict_response, run_command_response, save_buffer_response, server_message,
+    session_scoped_request, write_file_response,
 };
 use super::server_buffer_tracker::{PendingBufferRequestKind, ServerBufferTracker};
 use super::{diff_state_proto, ripgrep_search};
@@ -902,6 +905,12 @@ impl ServerModel {
                     }
                     Some(host_scoped_request::Message::DeleteFile(m)) => {
                         self.handle_delete_file(m, &request_id, conn_id, ctx)
+                    }
+                    Some(host_scoped_request::Message::RenamePath(m)) => {
+                        self.handle_rename_path(m, &request_id, conn_id, ctx)
+                    }
+                    Some(host_scoped_request::Message::DeletePath(m)) => {
+                        self.handle_delete_path(m, &request_id, conn_id, ctx)
                     }
                     Some(host_scoped_request::Message::ReadFileContext(m)) => {
                         self.handle_read_file_context(m, &request_id, conn_id, ctx)
@@ -2348,6 +2357,135 @@ impl ServerModel {
 
         // Response sent asynchronously via the event subscription.
         HandlerOutcome::Async(None)
+    }
+
+    /// Handles `RenamePath` by renaming on the local filesystem of this daemon
+    /// and retargeting any open buffers that lived at the old path.
+    fn handle_rename_path(
+        &mut self,
+        msg: RenamePath,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        if let Some(message) = rejected_filesystem_mutation(&msg.old_path)
+            .or_else(|| rejected_filesystem_mutation(&msg.new_path))
+        {
+            return HandlerOutcome::Sync(rename_path_error(message));
+        }
+        if msg.old_path == msg.new_path {
+            return HandlerOutcome::Sync(rename_path_ok());
+        }
+
+        let old_path = msg.old_path;
+        let new_path = msg.new_path;
+        let request_id_for_response = request_id.clone();
+        let handle = self.spawn_request_handler(
+            request_id.clone(),
+            async move {
+                async_fs::rename(&old_path, &new_path)
+                    .await
+                    .map(|()| (old_path, new_path))
+                    .map_err(|err| err.to_string())
+            },
+            move |me, result, ctx| {
+                let message = match result {
+                    Ok((old_path, new_path)) => {
+                        me.retarget_open_buffers_after_rename(&old_path, &new_path, ctx);
+                        rename_path_ok()
+                    }
+                    Err(message) => {
+                        safe_warn!(
+                            safe: ("RenamePath failed"),
+                            full: ("RenamePath failed: {message}")
+                        );
+                        rename_path_error(message)
+                    }
+                };
+                me.send_server_message(Some(conn_id), Some(&request_id_for_response), message);
+            },
+            ctx,
+        );
+        HandlerOutcome::Async(Some(handle))
+    }
+
+    /// Handles `DeletePath` by deleting a file or directory on this daemon's
+    /// filesystem. Directories are removed recursively. Symlinks are removed
+    /// as links, not followed.
+    fn handle_delete_path(
+        &mut self,
+        msg: DeletePath,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        if let Some(message) = rejected_filesystem_mutation(&msg.path) {
+            return HandlerOutcome::Sync(delete_path_error(message));
+        }
+
+        let path = msg.path;
+        let request_id_for_response = request_id.clone();
+        let handle = self.spawn_request_handler(
+            request_id.clone(),
+            async move {
+                let metadata = async_fs::symlink_metadata(&path)
+                    .await
+                    .map_err(|err| err.to_string())?;
+                if metadata.is_dir() {
+                    async_fs::remove_dir_all(&path).await
+                } else {
+                    async_fs::remove_file(&path).await
+                }
+                .map(|()| path)
+                .map_err(|err| err.to_string())
+            },
+            move |me, result, ctx| {
+                let message = match result {
+                    Ok(path) => {
+                        me.drop_open_buffers_after_delete(&path, ctx);
+                        delete_path_ok()
+                    }
+                    Err(message) => {
+                        safe_warn!(
+                            safe: ("DeletePath failed"),
+                            full: ("DeletePath failed: {message}")
+                        );
+                        delete_path_error(message)
+                    }
+                };
+                me.send_server_message(Some(conn_id), Some(&request_id_for_response), message);
+            },
+            ctx,
+        );
+        HandlerOutcome::Async(Some(handle))
+    }
+
+    fn retarget_open_buffers_after_rename(
+        &mut self,
+        old_path: &str,
+        new_path: &str,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let updates = self.buffers.paths_after_rename(old_path, new_path);
+        for (old, new, file_id) in updates {
+            self.buffers.retarget_path(&old, new.clone());
+            let new_buf = PathBuf::from(&new);
+            GlobalBufferModel::handle(ctx).update(ctx, |model, _| {
+                model.retarget_local_location(file_id, new_buf.clone());
+            });
+            FileModel::handle(ctx).update(ctx, |model, _| {
+                model.retarget_local_path(file_id, new_buf);
+            });
+        }
+    }
+
+    fn drop_open_buffers_after_delete(&mut self, path: &str, ctx: &mut ModelContext<Self>) {
+        let file_ids = self.buffers.take_paths_affected_by_delete(path);
+        for file_id in file_ids {
+            GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
+                model.remove(file_id, ctx);
+            });
+        }
     }
 
     /// Handles `ReadFileContext` by spawning an async batch file read on the
@@ -3878,6 +4016,42 @@ fn file_context_result_to_proto(result: ReadFileContextResult) -> ReadFileContex
         file_contexts,
         failed_files,
     }
+}
+
+fn rejected_filesystem_mutation(path: &str) -> Option<String> {
+    if crate::code::remote_fs_path::is_protected_filesystem_path(path) {
+        Some("Refusing to modify a filesystem root or relative path".to_string())
+    } else {
+        None
+    }
+}
+
+fn rename_path_ok() -> server_message::Message {
+    server_message::Message::RenamePathResponse(RenamePathResponse {
+        result: Some(rename_path_response::Result::Success(RenamePathSuccess {})),
+    })
+}
+
+fn rename_path_error(message: String) -> server_message::Message {
+    server_message::Message::RenamePathResponse(RenamePathResponse {
+        result: Some(rename_path_response::Result::Error(FileOperationError {
+            message,
+        })),
+    })
+}
+
+fn delete_path_ok() -> server_message::Message {
+    server_message::Message::DeletePathResponse(DeletePathResponse {
+        result: Some(delete_path_response::Result::Success(DeletePathSuccess {})),
+    })
+}
+
+fn delete_path_error(message: String) -> server_message::Message {
+    server_message::Message::DeletePathResponse(DeletePathResponse {
+        result: Some(delete_path_response::Result::Error(FileOperationError {
+            message,
+        })),
+    })
 }
 
 #[cfg(test)]

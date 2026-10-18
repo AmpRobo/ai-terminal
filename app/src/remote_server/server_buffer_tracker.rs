@@ -89,6 +89,49 @@ impl ServerBufferTracker {
         })
     }
 
+    /// Paths that move when `old_path` is renamed to `new_path`, with their file ids.
+    pub fn paths_after_rename(
+        &self,
+        old_path: &str,
+        new_path: &str,
+    ) -> Vec<(String, String, FileId)> {
+        self.open_buffers
+            .iter()
+            .filter_map(|(path, file_id)| {
+                let mapped =
+                    crate::code::remote_fs_path::path_after_rename(path, old_path, new_path)?;
+                Some((path.clone(), mapped, *file_id))
+            })
+            .collect()
+    }
+
+    /// Replaces an open-buffer path key. The `FileId` stays the same.
+    pub fn retarget_path(&mut self, old_path: &str, new_path: String) {
+        if let Some(file_id) = self.open_buffers.remove(old_path) {
+            self.open_buffers.insert(new_path, file_id);
+        }
+    }
+
+    /// Drops open buffers at `deleted` and under it. Returns their file ids.
+    pub fn take_paths_affected_by_delete(&mut self, deleted: &str) -> Vec<FileId> {
+        let matched: Vec<String> = self
+            .open_buffers
+            .keys()
+            .filter(|path| crate::code::remote_fs_path::path_affected_by_delete(path, deleted))
+            .cloned()
+            .collect();
+        let mut file_ids = Vec::with_capacity(matched.len());
+        for path in matched {
+            if let Some(file_id) = self.open_buffers.remove(&path) {
+                self.buffer_handles.remove(&file_id);
+                self.buffer_connections.remove(&file_id);
+                self.pending_requests.remove(&file_id);
+                file_ids.push(file_id);
+            }
+        }
+        file_ids
+    }
+
     // ── Connection tracking ───────────────────────────────────────
 
     /// Add a connection to a buffer's subscriber set.

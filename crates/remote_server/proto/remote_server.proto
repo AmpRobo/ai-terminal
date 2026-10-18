@@ -49,6 +49,8 @@ message HostScopedRequest {
     GitGenerateCommitMessageRequest git_generate_commit_message = 18;
     GitGetCommittedBranchFilesRequest git_get_committed_branch_files = 19;
     RipgrepSearchRequest ripgrep_search = 21;
+    RenamePath rename_path = 22;
+    DeletePath delete_path = 23;
   }
 }
 
@@ -125,6 +127,8 @@ message ServerMessage {
     GitHubRepositoryInfoPush github_repository_info_push = 36;
     RipgrepSearchResponse ripgrep_search_response = 37;
     RemoteAgentContextSnapshot remote_agent_context_snapshot = 33;
+    RenamePathResponse rename_path_response = 38;
+    DeletePathResponse delete_path_response = 39;
   }
 }
 
@@ -401,6 +405,38 @@ message DeleteFileResponse {
 }
 
 message DeleteFileSuccess {}
+
+// Client → server: rename a file or directory on the remote filesystem.
+message RenamePath {
+  string old_path = 1;
+  string new_path = 2;
+}
+
+// Server → client: result of a RenamePath request.
+message RenamePathResponse {
+  oneof result {
+    RenamePathSuccess success = 1;
+    FileOperationError error = 2;
+  }
+}
+
+message RenamePathSuccess {}
+
+// Client → server: delete a file or directory on the remote filesystem.
+// Directories are removed recursively.
+message DeletePath {
+  string path = 1;
+}
+
+// Server → client: result of a DeletePath request.
+message DeletePathResponse {
+  oneof result {
+    DeletePathSuccess success = 1;
+    FileOperationError error = 2;
+  }
+}
+
+message DeletePathSuccess {}
 
 // ── Read file context (batch) ─────────────────────────────────────
 

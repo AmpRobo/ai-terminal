@@ -1,6 +1,127 @@
 use super::*;
 
 #[test]
+fn ssh_command_starting_in_directory_appends_a_login_shell() {
+    assert_eq!(
+        ssh_command_starting_in_directory("ssh user@host", "/repo").as_deref(),
+        Some("ssh user@host -t 'cd /repo && exec \"$SHELL\" -l'")
+    );
+    assert_eq!(
+        ssh_command_starting_in_directory("ssh -p 2222 user@host", "/repo").as_deref(),
+        Some("ssh -p 2222 user@host -t 'cd /repo && exec \"$SHELL\" -l'")
+    );
+    assert_eq!(
+        ssh_command_starting_in_directory("command ssh user@host", "/repo").as_deref(),
+        Some("ssh user@host -t 'cd /repo && exec \"$SHELL\" -l'")
+    );
+    assert_eq!(
+        ssh_command_starting_in_directory("ssh user@host", "/my repo").as_deref(),
+        Some("ssh user@host -t 'cd '\\''/my repo'\\'' && exec \"$SHELL\" -l'")
+    );
+}
+
+#[test]
+fn ssh_command_starting_in_directory_rejects_non_plain_ssh() {
+    assert!(ssh_command_starting_in_directory("gcloud compute ssh instance", "/repo").is_none());
+    assert!(ssh_command_starting_in_directory("ssh user@host uname", "/repo").is_none());
+    assert!(ssh_command_starting_in_directory("ssh", "/repo").is_none());
+}
+
+#[test]
+fn ssh_command_starting_in_directory_replaces_hostname_with_ip() {
+    let directory = "/home/michael/log/vehicle/2026-08-24_20-20-58_61895";
+    assert_eq!(
+        ssh_command_starting_in_directory_with_host(
+            "ssh michael@ThinkPad-X1",
+            directory,
+            Some("192.168.1.5"),
+        )
+        .as_deref(),
+        Some(
+            "ssh -o 'HostKeyAlias=ThinkPad-X1' michael@192.168.1.5 -t 'cd /home/michael/log/vehicle/2026-08-24_20-20-58_61895 && exec \"$SHELL\" -l'"
+        )
+    );
+    assert_eq!(
+        ssh_command_starting_in_directory_with_host(
+            "ssh -p 2222 -i ~/.ssh/id_ed25519 michael@ThinkPad-X1",
+            "/repo",
+            Some("192.168.1.5"),
+        )
+        .as_deref(),
+        Some(
+            "ssh -p 2222 -i ~/.ssh/id_ed25519 -o 'HostKeyAlias=ThinkPad-X1' michael@192.168.1.5 -t 'cd /repo && exec \"$SHELL\" -l'"
+        )
+    );
+    assert_eq!(
+        ssh_command_starting_in_directory_with_host(
+            "ssh michael@ThinkPad-X1",
+            "/repo",
+            Some("2001:db8::1"),
+        )
+        .as_deref(),
+        Some(
+            "ssh -o 'HostKeyAlias=ThinkPad-X1' 'michael@[2001:db8::1]' -t 'cd /repo && exec \"$SHELL\" -l'"
+        )
+    );
+    assert_eq!(
+        ssh_command_starting_in_directory_with_host(
+            "ssh -o HostKeyAlias=alias michael@ThinkPad-X1",
+            "/repo",
+            Some("192.168.1.5"),
+        )
+        .as_deref(),
+        Some("ssh -o 'HostKeyAlias=alias' michael@192.168.1.5 -t 'cd /repo && exec \"$SHELL\" -l'")
+    );
+}
+
+#[test]
+fn ssh_command_starting_in_directory_keeps_jump_host_and_literal_ip() {
+    assert_eq!(
+        ssh_command_starting_in_directory_with_host(
+            "ssh -J bastion michael@ThinkPad-X1",
+            "/repo",
+            Some("10.0.0.1"),
+        )
+        .as_deref(),
+        Some("ssh -J bastion michael@ThinkPad-X1 -t 'cd /repo && exec \"$SHELL\" -l'")
+    );
+    assert_eq!(
+        ssh_command_starting_in_directory_with_host(
+            "ssh -o ProxyJump=bastion michael@ThinkPad-X1",
+            "/repo",
+            Some("10.0.0.1"),
+        )
+        .as_deref(),
+        Some("ssh -o ProxyJump=bastion michael@ThinkPad-X1 -t 'cd /repo && exec \"$SHELL\" -l'")
+    );
+    assert_eq!(
+        ssh_command_starting_in_directory_with_host(
+            "ssh michael@192.168.1.5",
+            "/repo",
+            Some("10.0.0.1"),
+        )
+        .as_deref(),
+        Some("ssh michael@192.168.1.5 -t 'cd /repo && exec \"$SHELL\" -l'")
+    );
+}
+
+#[test]
+fn ssh_command_for_endpoint_includes_user_and_port() {
+    assert_eq!(
+        ssh_command_for_endpoint("user", "host", Some("2222"), "/repo"),
+        "ssh -p 2222 user@host -t 'cd /repo && exec \"$SHELL\" -l'"
+    );
+    assert_eq!(
+        ssh_command_for_endpoint("", "host", None, "/repo"),
+        "ssh host -t 'cd /repo && exec \"$SHELL\" -l'"
+    );
+    assert_eq!(
+        ssh_command_for_endpoint("user", "2001:db8::1", None, "/repo"),
+        "ssh 'user@[2001:db8::1]' -t 'cd /repo && exec \"$SHELL\" -l'"
+    );
+}
+
+#[test]
 fn ssh_gcloud_ssh_parsing() {
     assert!(parse_interactive_ssh_command("gcloud").is_none());
     assert!(parse_interactive_ssh_command("gcloud compute").is_none());

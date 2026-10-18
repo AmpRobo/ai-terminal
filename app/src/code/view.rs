@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use ai_terminal_core::HostId;
 use ai_terminal_core::channel::{Channel, ChannelState};
 use ai_terminal_core::features::FeatureFlag;
 use ai_terminal_core::ui::appearance::Appearance;
@@ -26,6 +27,8 @@ use ai_terminal_ui::{
     ViewHandle, WindowId, id,
 };
 use ai_terminal_util::path::LineAndColumnArg;
+use ai_terminal_util::remote_path::RemotePath;
+use ai_terminal_util::standardized_path::StandardizedPath;
 use lsp::LspManagerModel;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::rect::RectF;
@@ -1504,6 +1507,54 @@ impl CodeView {
         ctx.notify();
     }
 
+    /// Closes tabs whose remote path is `deleted` or a descendant of it.
+    pub fn close_remote_paths(
+        &mut self,
+        host_id: &HostId,
+        deleted: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let mut indices_to_remove = Vec::new();
+        for (tab_idx, tab) in self.tab_group.iter().enumerate() {
+            if remote_tab_affected(tab, host_id, deleted) {
+                indices_to_remove.push(tab_idx);
+            }
+        }
+        for &tab_idx in indices_to_remove.iter().rev() {
+            self.remove_tab_data_index(tab_idx, ctx);
+        }
+    }
+
+    /// Points open remote tabs at the path produced by renaming `old_path` to `new_path`.
+    pub fn retarget_remote_paths(
+        &mut self,
+        host_id: &HostId,
+        old_path: &str,
+        new_path: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let mut updated = false;
+        for tab in self.tab_group.iter_mut() {
+            let Some(mapped) = remote_tab_renamed_path(tab, host_id, old_path, new_path) else {
+                continue;
+            };
+            let Ok(std_path) = StandardizedPath::try_new(&mapped) else {
+                continue;
+            };
+            let new_remote = RemotePath::new(host_id.clone(), std_path);
+            tab.location = Some(LocalOrRemotePath::Remote(new_remote.clone()));
+            tab.editor_view.update(ctx, |editor, ctx| {
+                editor.retarget_remote_location(new_remote, ctx);
+            });
+            updated = true;
+        }
+        if updated {
+            self.update_tab_bar_state(ctx);
+            self.set_title_after_content_update(ctx);
+            ctx.notify();
+        }
+    }
+
     fn update_tab_bar_state(&mut self, ctx: &mut ViewContext<Self>) {
         if self.tab_group.is_empty() {
             ctx.emit(CodeViewEvent::Pane(PaneEvent::Close));
@@ -2523,6 +2574,34 @@ impl BackingView for CodeView {
     fn set_focus_handle(&mut self, focus_handle: PaneFocusHandle, _ctx: &mut ViewContext<Self>) {
         self.focus_handle = Some(focus_handle);
     }
+}
+
+fn remote_tab_affected(tab: &TabData, host_id: &HostId, deleted: &str) -> bool {
+    match tab.location.as_ref() {
+        Some(LocalOrRemotePath::Remote(remote)) => {
+            &remote.host_id == host_id
+                && crate::code::remote_fs_path::path_affected_by_delete(
+                    remote.path.as_str(),
+                    deleted,
+                )
+        }
+        Some(LocalOrRemotePath::Local(_)) | None => false,
+    }
+}
+
+fn remote_tab_renamed_path(
+    tab: &TabData,
+    host_id: &HostId,
+    old_path: &str,
+    new_path: &str,
+) -> Option<String> {
+    let LocalOrRemotePath::Remote(remote) = tab.location.as_ref()? else {
+        return None;
+    };
+    if &remote.host_id != host_id {
+        return None;
+    }
+    crate::code::remote_fs_path::path_after_rename(remote.path.as_str(), old_path, new_path)
 }
 
 fn render_unsaved_changes_icon(color: ColorU) -> Box<dyn Element> {

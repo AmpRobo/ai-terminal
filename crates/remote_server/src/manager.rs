@@ -939,6 +939,32 @@ impl HostRequestHandle {
         crate::host_response::delete_file_result(&msg).map_err(HostRequestError::OperationFailed)
     }
 
+    /// Renames a file or directory on the remote host.
+    pub async fn rename_path(
+        &self,
+        old_path: String,
+        new_path: String,
+    ) -> Result<(), HostRequestError> {
+        let msg = self
+            .send(crate::proto::host_scoped_request::Message::RenamePath(
+                crate::proto::RenamePath { old_path, new_path },
+            ))
+            .await?;
+        crate::host_response::rename_path_result(&msg).map_err(HostRequestError::OperationFailed)
+    }
+
+    /// Deletes a file or directory on the remote host.
+    ///
+    /// Directories are removed recursively.
+    pub async fn delete_path(&self, path: String) -> Result<(), HostRequestError> {
+        let msg = self
+            .send(crate::proto::host_scoped_request::Message::DeletePath(
+                crate::proto::DeletePath { path },
+            ))
+            .await?;
+        crate::host_response::delete_path_result(&msg).map_err(HostRequestError::OperationFailed)
+    }
+
     /// Saves a remote buffer to disk on the host.
     pub async fn save_buffer(&self, path: String) -> Result<(), HostRequestError> {
         let msg = self

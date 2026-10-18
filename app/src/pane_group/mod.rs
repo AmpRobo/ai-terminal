@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::mpsc::SyncSender;
 
 use ai_terminal_cli::agent::Harness;
+use ai_terminal_core::HostId;
 use ai_terminal_core::command::ExitCode;
 use ai_terminal_core::context_flag::ContextFlag;
 use ai_terminal_errors::report_if_error;
@@ -726,6 +727,18 @@ pub enum Event {
     },
     OpenDirectoryInNewTab {
         path: PathBuf,
+    },
+    OpenRemoteDirectoryInNewTab {
+        path: String,
+    },
+    RemoteFileRenamed {
+        host_id: HostId,
+        old_path: String,
+        new_path: String,
+    },
+    RemoteFileDeleted {
+        host_id: HostId,
+        path: String,
     },
     InsertCodeReviewComments {
         repo_path: LocalOrRemotePath,

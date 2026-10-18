@@ -46,6 +46,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ::settings::{Setting, ToggleableSetting};
 use ai::index::full_source_code_embedding::manager::CodebaseIndexManager;
 use ai_terminal_cli::agent::Harness;
+use ai_terminal_core::HostId;
 use ai_terminal_core::context_flag::ContextFlag;
 use ai_terminal_core::execution_mode::AppExecutionMode;
 use ai_terminal_core::features::FeatureFlag;
@@ -263,6 +264,7 @@ use crate::code::editor::{add_color, remove_color};
 #[cfg(feature = "local_fs")]
 use crate::code::editor_management::CodeManager;
 use crate::code::editor_management::CodeSource;
+use crate::code::global_buffer_model::GlobalBufferModel;
 #[cfg(feature = "local_fs")]
 use crate::code_review::CodeReviewTelemetryEvent;
 use crate::code_review::GlobalCodeReviewModel;
@@ -6766,26 +6768,39 @@ impl Workspace {
                     LocalOrRemotePath::Remote(_) => {
                         #[cfg(feature = "local_fs")]
                         {
-                            // Honor a notebook-viewer target (e.g. a remote
-                            // Jupyter notebook) instead of always opening remote
-                            // files as raw code in the editor.
-                            if let FileTarget::MarkdownViewer(layout) = target {
-                                self.open_file_notebook(
-                                    location.clone(),
-                                    None,
-                                    *layout,
-                                    Some(code_source),
-                                    ctx,
-                                );
-                            } else {
-                                self.open_code(
-                                    code_source,
-                                    crate::util::openable_file_type::EditorLayout::SplitPane,
-                                    *line_col,
-                                    false,
-                                    &[],
-                                    ctx,
-                                );
+                            match target {
+                                FileTarget::MarkdownViewer(layout) => {
+                                    self.open_file_notebook(
+                                        location.clone(),
+                                        None,
+                                        *layout,
+                                        Some(code_source),
+                                        ctx,
+                                    );
+                                }
+                                FileTarget::CodeEditor(layout) => {
+                                    self.open_code(
+                                        code_source,
+                                        *layout,
+                                        *line_col,
+                                        false,
+                                        &[],
+                                        ctx,
+                                    );
+                                }
+                                FileTarget::ExternalEditor(_)
+                                | FileTarget::EnvEditor
+                                | FileTarget::SystemDefault
+                                | FileTarget::SystemGeneric => {
+                                    self.open_code(
+                                        code_source,
+                                        EditorLayout::SplitPane,
+                                        *line_col,
+                                        false,
+                                        &[],
+                                        ctx,
+                                    );
+                                }
                             }
                         }
                     }
@@ -8985,6 +9000,73 @@ impl Workspace {
             None,
             ctx,
         );
+    }
+
+    /// Opens a new local terminal tab and starts an SSH session already `cd`'d
+    /// into `path` on the current remote host.
+    fn open_remote_directory_in_new_tab(&mut self, path: String, ctx: &mut ViewContext<Self>) {
+        let command = self.active_session_view(ctx).and_then(|terminal| {
+            terminal.read(ctx, |terminal, ctx| {
+                terminal.ssh_command_starting_in_directory(&path, ctx)
+            })
+        });
+        let Some(command) = command else {
+            log::warn!("Could not open remote directory in a new tab without an SSH session");
+            return;
+        };
+        self.add_tab_with_pane_layout(
+            PanesLayout::SingleTerminal(Box::default()),
+            Arc::new(HashMap::new()),
+            None,
+            ctx,
+        );
+        if let Some(terminal) = self.active_session_view(ctx) {
+            terminal.update(ctx, |terminal, ctx| {
+                terminal.execute_command_or_set_pending(&command, ctx);
+            });
+        }
+    }
+
+    fn retarget_remote_open_files(
+        &mut self,
+        host_id: &HostId,
+        old_path: &str,
+        new_path: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        for tab_data in &self.tabs {
+            tab_data.pane_group.update(ctx, |pane_group, ctx| {
+                let code_panes: Vec<_> = pane_group.code_panes(ctx).collect();
+                for (_, code_pane) in code_panes {
+                    code_pane.update(ctx, |code_view, ctx| {
+                        code_view.retarget_remote_paths(host_id, old_path, new_path, ctx);
+                    });
+                }
+            });
+        }
+        GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
+            model.retarget_remote_paths(host_id, old_path, new_path, ctx);
+        });
+        ctx.notify();
+    }
+
+    fn close_remote_open_files(
+        &mut self,
+        host_id: &HostId,
+        path: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        for tab_data in &self.tabs {
+            tab_data.pane_group.update(ctx, |pane_group, ctx| {
+                let code_panes: Vec<_> = pane_group.code_panes(ctx).collect();
+                for (_, code_pane) in code_panes {
+                    code_pane.update(ctx, |code_view, ctx| {
+                        code_view.close_remote_paths(host_id, path, ctx);
+                    });
+                }
+            });
+        }
+        ctx.notify();
     }
 
     #[cfg(feature = "local_fs")]
@@ -16637,6 +16719,19 @@ impl Workspace {
             }
             pane_group::Event::OpenDirectoryInNewTab { path } => {
                 self.open_directory_in_new_tab(path.clone(), ctx);
+            }
+            pane_group::Event::OpenRemoteDirectoryInNewTab { path } => {
+                self.open_remote_directory_in_new_tab(path.clone(), ctx);
+            }
+            pane_group::Event::RemoteFileRenamed {
+                host_id,
+                old_path,
+                new_path,
+            } => {
+                self.retarget_remote_open_files(host_id, old_path, new_path, ctx);
+            }
+            pane_group::Event::RemoteFileDeleted { host_id, path } => {
+                self.close_remote_open_files(host_id, path, ctx);
             }
             pane_group::Event::RunTabConfigSkill { path } => {
                 self.run_tab_config_skill(path, ctx);

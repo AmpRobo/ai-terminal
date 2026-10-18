@@ -209,8 +209,11 @@ use super::model::secrets::RichContentSecretTooltipInfo;
 use super::model::selection::ExpandedSelectionRange;
 use super::model::session::SessionBootstrappedEvent;
 use super::settings::AltScreenPaddingMode;
+use super::ssh::peer_addr::ssh_peer_address;
 use super::ssh::util::{
-    InteractiveSshCommand, SshAiTerminalifyCommand, parse_interactive_ssh_command,
+    InteractiveSshCommand, SshAiTerminalifyCommand, destination_hostname, hostname_is_ip,
+    parse_interactive_ssh_command, ssh_command_for_endpoint,
+    ssh_command_starting_in_directory_with_host, ssh_uses_jump_host,
 };
 use super::{CLIAgent, GridType, cli_agent, should_right_click_paste};
 #[cfg(any(test, feature = "integration_tests"))]
@@ -24628,6 +24631,81 @@ impl TerminalView {
     pub fn pwd_if_local(&self, ctx: &AppContext) -> Option<String> {
         self.active_session_path_if_local(ctx)
             .map(|path| path.to_string_lossy().into_owned())
+    }
+
+    /// SSH command that starts a login shell in `directory` on the active remote host.
+    ///
+    /// Prefers rewriting the session's original `ssh` invocation so options such as
+    /// identity files are kept. When that destination is a hostname, substitutes the
+    /// IP of the session's existing TCP connection so the new tab does not depend on
+    /// DNS. Falls back to `user@host` from the parsed connection or the session hostname.
+    pub fn ssh_command_starting_in_directory(
+        &self,
+        directory: &str,
+        ctx: &AppContext,
+    ) -> Option<String> {
+        let session_id = self.active_block_session_id()?;
+        let session = self.sessions.as_ref(ctx).get(session_id)?;
+        if session.is_local() {
+            return None;
+        }
+        let spawning_command = session
+            .subshell_info()
+            .as_ref()
+            .map(|info| info.spawning_command.clone());
+        let connection = session
+            .subshell_info()
+            .as_ref()
+            .and_then(|info| info.ssh_connection_info.clone());
+        let control_socket = session.ssh_control_socket_path().map(Path::to_path_buf);
+        let user = session.user().to_string();
+        let reported_hostname = session.hostname().to_string();
+
+        let destination = connection
+            .as_ref()
+            .and_then(|ssh| ssh.host.clone())
+            .filter(|host| !host.is_empty())
+            .unwrap_or_else(|| reported_hostname.clone());
+        let hostname = destination_hostname(&destination).to_string();
+        let port = connection
+            .as_ref()
+            .and_then(|ssh| ssh.port.as_deref())
+            .and_then(|port| port.parse().ok());
+        // DNS of the name that opened this session can fail while the TCP
+        // connection is up. A jump host's peer is not the destination.
+        let peer = if hostname_is_ip(&hostname)
+            || spawning_command.as_deref().is_some_and(ssh_uses_jump_host)
+        {
+            None
+        } else {
+            ssh_peer_address(&hostname, port, control_socket.as_deref())
+        };
+
+        if let Some(spawning_command) = spawning_command.as_deref() {
+            if let Some(command) = ssh_command_starting_in_directory_with_host(
+                spawning_command,
+                directory,
+                peer.as_deref(),
+            ) {
+                return Some(command);
+            }
+            if let Some(ssh) = connection.as_ref()
+                && let Some(host) = ssh.host.as_deref().filter(|host| !host.is_empty())
+            {
+                return Some(ssh_command_for_endpoint(
+                    &user,
+                    peer.as_deref().unwrap_or(host),
+                    ssh.port.as_deref(),
+                    directory,
+                ));
+            }
+        }
+        let host = peer.as_deref().unwrap_or(reported_hostname.as_str());
+        if host.is_empty() {
+            None
+        } else {
+            Some(ssh_command_for_endpoint(&user, host, None, directory))
+        }
     }
 
     /// Returns the active session's CWD as a `LocalOrRemotePath`.

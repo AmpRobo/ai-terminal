@@ -239,6 +239,38 @@ impl FileState {
         Some((backend, path_still_used))
     }
 
+    fn retarget_local_path(&mut self, file_id: FileId, new_path: PathBuf) -> bool {
+        let old_path = match self.files.get(&file_id) {
+            Some(FileBackend::Local(local)) => local.path.clone(),
+            _ => return false,
+        };
+        if let Some(old_path) = old_path {
+            let remove = self.path_refcount.get(&old_path).copied().unwrap_or(0) <= 1;
+            if remove {
+                self.path_refcount.remove(&old_path);
+            } else if let Some(count) = self.path_refcount.get_mut(&old_path) {
+                *count -= 1;
+            }
+        }
+        *self.path_refcount.entry(new_path.clone()).or_insert(0) += 1;
+        if let Some(FileBackend::Local(local)) = self.files.get_mut(&file_id) {
+            local.path = Some(new_path);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn retarget_remote_path(&mut self, file_id: FileId, new_path: StandardizedPath) -> bool {
+        match self.files.get_mut(&file_id) {
+            Some(FileBackend::Remote { path, .. }) => {
+                *path = new_path;
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn get(&self, file_id: FileId) -> Option<&FileBackend> {
         self.files.get(&file_id)
     }
@@ -377,6 +409,16 @@ impl FileModel {
         let file_id = FileId::new();
         self.file_state.insert_remote(file_id, host_id, path);
         file_id
+    }
+
+    /// Points an existing local file record at `new_path` without changing its `FileId`.
+    pub fn retarget_local_path(&mut self, file_id: FileId, new_path: PathBuf) -> bool {
+        self.file_state.retarget_local_path(file_id, new_path)
+    }
+
+    /// Points an existing remote file record at `new_path` without changing its `FileId`.
+    pub fn retarget_remote_path(&mut self, file_id: FileId, new_path: StandardizedPath) -> bool {
+        self.file_state.retarget_remote_path(file_id, new_path)
     }
 
     /// Register a file path and immediately return a FileId without loading the file.

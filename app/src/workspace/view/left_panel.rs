@@ -985,6 +985,32 @@ impl LeftPanelView {
                     pane_group::Event::OpenDirectoryInNewTab { path: path.clone() },
                 ));
             }
+            FileTreeEvent::OpenRemoteDirectoryInNewTab { path } => {
+                ctx.emit(LeftPanelEvent::FileTree(
+                    pane_group::Event::OpenRemoteDirectoryInNewTab { path: path.clone() },
+                ));
+            }
+            FileTreeEvent::RemoteFileRenamed {
+                host_id,
+                old_path,
+                new_path,
+            } => {
+                ctx.emit(LeftPanelEvent::FileTree(
+                    pane_group::Event::RemoteFileRenamed {
+                        host_id: host_id.clone(),
+                        old_path: old_path.clone(),
+                        new_path: new_path.clone(),
+                    },
+                ));
+            }
+            FileTreeEvent::RemoteFileDeleted { host_id, path } => {
+                ctx.emit(LeftPanelEvent::FileTree(
+                    pane_group::Event::RemoteFileDeleted {
+                        host_id: host_id.clone(),
+                        path: path.clone(),
+                    },
+                ));
+            }
         }
     }
 }
