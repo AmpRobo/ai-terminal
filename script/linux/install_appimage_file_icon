@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+#
+# Make a built AppImage show the application logo in the file manager.
+#
+# GNOME maps application/vnd.appimage to the generic executable icon, which is
+# a gear. The logo is already inside the package, but the file manager does not
+# use it for the file itself. A custom-icon attribute points the file at the
+# logo. A seeded thumbnail covers viewers that prefer a thumbnail over that
+# attribute. GNOME runs thumbnailer scripts in a sandbox that cannot see
+# ~/.local, so this does not register a user thumbnailer.
+#
+# Usage: install_appimage_file_icon APPIMAGE [ICON_PNG]
+
+set -euo pipefail
+
+APPIMAGE=${1:-}
+ICON=${2:-}
+if [[ -z "$APPIMAGE" || ! -f "$APPIMAGE" ]]; then
+  echo "usage: install_appimage_file_icon APPIMAGE [ICON_PNG]" >&2
+  exit 1
+fi
+
+FILLED_ICON=""
+if [[ -n "$ICON" && -f "$ICON" ]] && command -v python3 >/dev/null 2>&1; then
+  FILLED_ICON="$(
+    python3 - "$APPIMAGE" "$ICON" <<'PY' || true
+import hashlib
+import os
+import pathlib
+import sys
+
+appimage, icon = sys.argv[1:]
+try:
+    from PIL import Image
+    from PIL.PngImagePlugin import PngInfo
+except ImportError:
+    sys.exit(0)
+
+image = Image.open(icon).convert("RGBA")
+canvas_size = image.size
+bounds = image.getchannel("A").getbbox()
+if bounds:
+    image = image.crop(bounds)
+width, height = image.size
+background = (0, 0, 0, 255)
+pixels = image.load()
+for y in range(height):
+    red, green, blue, alpha = pixels[width // 2, y]
+    if alpha == 255:
+        background = (red, green, blue, 255)
+        break
+# The source artwork sits inside a transparent margin. Scale it to the canvas
+# and fill the leftover rounded corners so the file icon occupies its whole slot.
+filled = Image.new("RGBA", canvas_size, background)
+filled.alpha_composite(image.resize(canvas_size, Image.Resampling.LANCZOS))
+destination = pathlib.Path.home() / ".local" / "share" / "ai-terminal" / "appimage-file-icon.png"
+destination.parent.mkdir(parents=True, exist_ok=True)
+filled.save(destination)
+print(destination)
+
+uri = pathlib.Path(appimage).resolve().as_uri()
+mtime = str(int(os.stat(appimage).st_mtime))
+name = hashlib.md5(uri.encode()).hexdigest() + ".png"
+cache = pathlib.Path.home() / ".cache" / "thumbnails"
+for directory, size in (("normal", 128), ("large", 256)):
+    thumb = filled.resize((size, size), Image.Resampling.LANCZOS)
+    meta = PngInfo()
+    meta.add_text("Thumb::URI", uri)
+    meta.add_text("Thumb::MTime", mtime)
+    meta.add_text("Software", "AI Terminal")
+    thumb_dir = cache / directory
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+    thumb.save(thumb_dir / name, pnginfo=meta)
+PY
+  )" || echo "Could not prepare a full-size AppImage file icon." >&2
+fi
+
+ICON_FOR_FILE="${FILLED_ICON:-$ICON}"
+if [[ -n "$ICON_FOR_FILE" && -f "$ICON_FOR_FILE" ]] && command -v gio >/dev/null 2>&1; then
+  icon_uri="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().as_uri())' "$ICON_FOR_FILE")"
+  if ! gio set "$APPIMAGE" metadata::custom-icon "$icon_uri"; then
+    echo "Could not set the AppImage file icon." >&2
+  fi
+fi

@@ -1,9 +1,11 @@
+use std::ffi::OsStr;
 use std::fs;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
+use command::blocking::Command;
 
 /// Characters that require an `Exec` argument to be quoted, per the Desktop Entry specification.
 const EXEC_RESERVED_CHARS: &[char] = &[
@@ -46,6 +48,7 @@ fn install_desktop_integration(appimage: &Path, appdir: &Path, data_dir: &Path) 
     // environment picks up the entry.
     let icons_src = appdir.join("usr/share/icons/hicolor");
     let icons_dest = data_dir.join("icons/hicolor");
+    let mut file_icon: Option<(u32, PathBuf)> = None;
     for size_dir in read_dir_paths(&icons_src)? {
         for extension in ["png", "svg"] {
             let icon_name = format!("{desktop_id}.{extension}");
@@ -56,10 +59,16 @@ fn install_desktop_integration(appimage: &Path, appdir: &Path, data_dir: &Path) 
             let size = size_dir.file_name().context("Icon directory has no name")?;
             let contents =
                 fs::read(&icon).with_context(|| format!("Failed to read {}", icon.display()))?;
-            write_if_changed(
-                &icons_dest.join(size).join("apps").join(&icon_name),
-                &contents,
-            )?;
+            let icon_path = icons_dest.join(size).join("apps").join(&icon_name);
+            write_if_changed(&icon_path, &contents)?;
+            if extension == "png"
+                && let Some(pixels) = icon_dir_size(size)
+                && file_icon
+                    .as_ref()
+                    .is_none_or(|(current, _)| pixels > *current)
+            {
+                file_icon = Some((pixels, icon_path));
+            }
         }
     }
     // Icon themes skip `~/.local/share/icons/hicolor` when it has no index, and the
@@ -75,7 +84,17 @@ fn install_desktop_integration(appimage: &Path, appdir: &Path, data_dir: &Path) 
     write_if_changed(
         &data_dir.join("applications").join(file_name),
         entry.as_bytes(),
-    )
+    )?;
+    // GNOME shows the generic executable gear for an AppImage file. The embedded
+    // logo is not used as that file's icon, so point the file itself at a copy
+    // of the logo that has been scaled to the edges of the icon square.
+    if appimage.is_file()
+        && let Some((_, icon)) = file_icon
+        && let Some(filled) = file_icon_for_file_manager(&icon, data_dir)
+    {
+        set_custom_file_icon(appimage, &filled);
+    }
+    Ok(())
 }
 
 /// Returns the single desktop entry the AppImage specification requires at the root of an AppDir.
@@ -186,6 +205,125 @@ fn quote_exec_program(program: &str) -> String {
 }
 
 const HICOLOR_APP_ICON_SIZES: &[u32] = &[16, 32, 48, 64, 128, 256, 512];
+
+fn icon_dir_size(name: &OsStr) -> Option<u32> {
+    let (size, _) = name.to_str()?.split_once('x')?;
+    size.parse().ok()
+}
+
+/// Scales `icon` so its opaque artwork covers the whole canvas. The source icons
+/// keep a transparent margin, which leaves the file-manager icon floating inside
+/// its slot.
+fn file_icon_filling_canvas(icon: &image::RgbaImage) -> image::RgbaImage {
+    let width = icon.width();
+    let height = icon.height();
+    let Some((left, top, crop_width, crop_height)) = opaque_bounds(icon) else {
+        return icon.clone();
+    };
+    let cropped = image::imageops::crop_imm(icon, left, top, crop_width, crop_height).to_image();
+    let scaled = image::imageops::resize(
+        &cropped,
+        width,
+        height,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let background = background_color(&scaled);
+    let mut canvas = image::RgbaImage::new(width, height);
+    for (x, y, pixel) in scaled.enumerate_pixels() {
+        canvas.put_pixel(x, y, composite_over(background, *pixel));
+    }
+    canvas
+}
+
+fn composite_over(background: image::Rgba<u8>, foreground: image::Rgba<u8>) -> image::Rgba<u8> {
+    let source_alpha = u32::from(foreground[3]);
+    if source_alpha == 0 {
+        return background;
+    }
+    if source_alpha == 255 {
+        return foreground;
+    }
+    let destination_alpha = u32::from(background[3]);
+    let out_alpha = source_alpha + destination_alpha * (255 - source_alpha) / 255;
+    let blend = |source: u8, destination: u8| -> u8 {
+        let blended = u32::from(source) * source_alpha
+            + u32::from(destination) * destination_alpha * (255 - source_alpha) / 255;
+        (blended / out_alpha.max(1)) as u8
+    };
+    image::Rgba([
+        blend(foreground[0], background[0]),
+        blend(foreground[1], background[1]),
+        blend(foreground[2], background[2]),
+        out_alpha as u8,
+    ])
+}
+
+fn opaque_bounds(icon: &image::RgbaImage) -> Option<(u32, u32, u32, u32)> {
+    let mut left = icon.width();
+    let mut top = icon.height();
+    let mut right = 0;
+    let mut bottom = 0;
+    let mut found = false;
+    for (x, y, pixel) in icon.enumerate_pixels() {
+        if pixel[3] == 0 {
+            continue;
+        }
+        found = true;
+        left = left.min(x);
+        top = top.min(y);
+        right = right.max(x);
+        bottom = bottom.max(y);
+    }
+    found.then_some((left, top, right - left + 1, bottom - top + 1))
+}
+
+fn background_color(icon: &image::RgbaImage) -> image::Rgba<u8> {
+    let x = icon.width() / 2;
+    for y in 0..icon.height() {
+        let pixel = *icon.get_pixel(x, y);
+        if pixel[3] == 255 {
+            return pixel;
+        }
+    }
+    image::Rgba([0, 0, 0, 255])
+}
+
+fn file_icon_for_file_manager(icon: &Path, data_dir: &Path) -> Option<PathBuf> {
+    let image = image::open(icon).ok()?.into_rgba8();
+    let filled = file_icon_filling_canvas(&image);
+    let destination = data_dir.join("ai-terminal/appimage-file-icon.png");
+    let mut bytes = Vec::new();
+    filled
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .ok()?;
+    write_if_changed(&destination, &bytes).ok()?;
+    Some(destination)
+}
+
+fn set_custom_file_icon(appimage: &Path, icon: &Path) {
+    let Ok(uri) = url::Url::from_file_path(icon) else {
+        log::warn!(
+            "Could not set the AppImage file icon: {} is not an absolute path",
+            icon.display()
+        );
+        return;
+    };
+    let Some(appimage) = appimage.to_str() else {
+        return;
+    };
+    match Command::new("gio")
+        .args(["set", appimage, "metadata::custom-icon", uri.as_str()])
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => log::warn!("Could not set the AppImage file icon: gio exited {status}"),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => log::warn!("Could not set the AppImage file icon: {err}"),
+    }
+}
 
 /// Creates the hicolor theme index when this data directory does not have one.
 fn ensure_hicolor_index(icons_dest: &Path) -> Result<()> {

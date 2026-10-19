@@ -99,4 +99,14 @@ if [ "${GITHUB_ACTIONS}" == "true" ]; then
   echo "::echo::off"
 fi
 
+# The package already contains the logo. GNOME still shows the generic executable
+# gear for the file until this attribute points the file manager at that logo.
+if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
+  icon="$WORKSPACE_ROOT_DIR/app/channels/$RELEASE_CHANNEL/icon/no-padding/256x256.png"
+  if [[ ! -f "$icon" ]]; then
+    icon="$WORKSPACE_ROOT_DIR/app/channels/$RELEASE_CHANNEL/icon/no-padding/512x512.png"
+  fi
+  "$WORKSPACE_ROOT_DIR/script/linux/install_appimage_file_icon" "$APPIMAGE_PATH" "$icon"
+fi
+
 echo "Successfully built AppImage at $APPIMAGE_PATH!"

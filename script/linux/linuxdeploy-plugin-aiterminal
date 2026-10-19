@@ -76,4 +76,37 @@ echo "Copying bundled resources to $DEST_RESOURCES"
 mkdir -p "$DEST_RESOURCES"
 cp -R "$AI_TERMINAL_BUNDLED_RESOURCES_DIR/." "$DEST_RESOURCES/"
 
+# linuxdeploy publishes the AppImage icon as a symlink chain. Thumbnailers that
+# do not follow symlinks keep the generic executable icon (a gear) instead of the logo.
+materialize_appimage_icon() {
+  local root_icon="" icon_base="" best="" candidate="" size=""
+  root_icon="$(find "$APPDIR" -maxdepth 1 -type l -name '*.png' -print -quit)"
+  if [[ -z "$root_icon" ]]; then
+    root_icon="$(find "$APPDIR" -maxdepth 1 -type f -name '*.png' -print -quit)"
+  fi
+  if [[ -z "$root_icon" ]]; then
+    return 0
+  fi
+
+  icon_base="$(basename "$root_icon")"
+  for size in 256x256 512x512 128x128 64x64 48x48 32x32 16x16; do
+    candidate="$APPDIR/usr/share/icons/hicolor/$size/apps/$icon_base"
+    if [[ -f "$candidate" ]]; then
+      best="$candidate"
+      break
+    fi
+  done
+  if [[ -z "$best" && -L "$root_icon" ]]; then
+    best="$(readlink -f "$root_icon" || true)"
+  fi
+  if [[ ! -f "$best" ]]; then
+    return 0
+  fi
+
+  rm -f "$APPDIR/.DirIcon" "$root_icon"
+  cp "$best" "$APPDIR/.DirIcon"
+  cp "$best" "$root_icon"
+}
+materialize_appimage_icon
+
 echo "Successfully restructured AppDir for AI Terminal"

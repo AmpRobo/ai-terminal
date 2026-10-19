@@ -2,6 +2,8 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
+use image::{Rgba, RgbaImage};
+
 use super::*;
 
 const DESKTOP_ENTRY: &str = "[Desktop Entry]
@@ -105,6 +107,25 @@ fn installs_desktop_entry_and_icons() {
     let index = fs::read_to_string(data_dir.path().join("icons/hicolor/index.theme")).unwrap();
     assert!(index.contains("512x512/apps"));
     assert!(index.contains("48x48/apps"));
+}
+
+#[test]
+fn file_icon_fills_its_canvas() {
+    let mut icon = RgbaImage::new(10, 10);
+    for y in 2..8 {
+        for x in 2..8 {
+            icon.put_pixel(x, y, Rgba([40, 43, 49, 255]));
+        }
+    }
+    icon.put_pixel(5, 5, Rgba([220, 220, 220, 255]));
+    icon.put_pixel(1, 1, Rgba([40, 43, 49, 10]));
+
+    let filled = file_icon_filling_canvas(&icon);
+
+    assert_eq!(filled.dimensions(), (10, 10));
+    assert!(filled.pixels().all(|pixel| pixel[3] == 255));
+    assert!(filled.get_pixel(0, 0)[0] < 80);
+    assert!(filled.pixels().any(|pixel| pixel[0] > 150));
 }
 
 #[test]
