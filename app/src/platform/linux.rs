@@ -3,6 +3,7 @@ use std::fs;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail, ensure};
 use command::blocking::Command;
@@ -32,12 +33,23 @@ pub fn install_appimage_desktop_integration() -> Result<()> {
     }
 
     let data_dir = dirs::data_dir().context("Failed to resolve the XDG data directory")?;
-    install_desktop_integration(Path::new(&appimage), &appdir, &data_dir)
+    install_desktop_integration(
+        Path::new(&appimage),
+        &appdir,
+        &data_dir,
+        &system_data_dirs(),
+    )
 }
 
 /// Copies the desktop entry at the root of `appdir` and its hicolor icons into `data_dir`,
-/// pointing the entry at `appimage`. Files whose contents are already up to date are left as-is.
-fn install_desktop_integration(appimage: &Path, appdir: &Path, data_dir: &Path) -> Result<()> {
+/// pointing the entry at `appimage`, and gives files named like `appimage` the application logo.
+/// Files whose contents are already up to date are left as-is.
+fn install_desktop_integration(
+    appimage: &Path,
+    appdir: &Path,
+    data_dir: &Path,
+    system_data_dirs: &[PathBuf],
+) -> Result<()> {
     let desktop_file = find_root_desktop_file(appdir)?;
     let desktop_id = desktop_file
         .file_stem()
@@ -48,6 +60,7 @@ fn install_desktop_integration(appimage: &Path, appdir: &Path, data_dir: &Path) 
     // environment picks up the entry.
     let icons_src = appdir.join("usr/share/icons/hicolor");
     let icons_dest = data_dir.join("icons/hicolor");
+    let mut icons_changed = false;
     let mut file_icon: Option<(u32, PathBuf)> = None;
     for size_dir in read_dir_paths(&icons_src)? {
         for extension in ["png", "svg"] {
@@ -60,7 +73,7 @@ fn install_desktop_integration(appimage: &Path, appdir: &Path, data_dir: &Path) 
             let contents =
                 fs::read(&icon).with_context(|| format!("Failed to read {}", icon.display()))?;
             let icon_path = icons_dest.join(size).join("apps").join(&icon_name);
-            write_if_changed(&icon_path, &contents)?;
+            icons_changed |= write_if_changed(&icon_path, &contents)?;
             if extension == "png"
                 && let Some(pixels) = icon_dir_size(size)
                 && file_icon
@@ -71,9 +84,30 @@ fn install_desktop_integration(appimage: &Path, appdir: &Path, data_dir: &Path) 
             }
         }
     }
+    // GNOME shows the generic executable gear for an AppImage file. The embedded
+    // logo is not used as that file's icon, so give the file a copy of the logo
+    // that has been scaled to the edges of the icon square.
+    let file_icon_name = format!("{desktop_id}-appimage");
+    let filled_icon = file_icon.and_then(|(_, icon)| {
+        let destination = icon.with_file_name(format!("{file_icon_name}.png"));
+        match write_filled_file_icon(&icon, &destination) {
+            Ok(changed) => {
+                icons_changed |= changed;
+                Some(destination)
+            }
+            Err(err) => {
+                log::warn!("Could not create the AppImage file icon: {err:#}");
+                None
+            }
+        }
+    });
     // Icon themes skip `~/.local/share/icons/hicolor` when it has no index, and the
     // dock then shows a generic icon instead of the application logo.
-    ensure_hicolor_index(&icons_dest)?;
+    ensure_hicolor_index(&icons_dest, system_data_dirs)?;
+    if icons_changed {
+        // Running applications only rescan an icon theme whose top-level directory has changed.
+        touch(&icons_dest)?;
+    }
 
     let contents = fs::read_to_string(&desktop_file)
         .with_context(|| format!("Failed to read {}", desktop_file.display()))?;
@@ -85,16 +119,133 @@ fn install_desktop_integration(appimage: &Path, appdir: &Path, data_dir: &Path) 
         &data_dir.join("applications").join(file_name),
         entry.as_bytes(),
     )?;
-    // GNOME shows the generic executable gear for an AppImage file. The embedded
-    // logo is not used as that file's icon, so point the file itself at a copy
-    // of the logo that has been scaled to the edges of the icon square.
     if appimage.is_file()
-        && let Some((_, icon)) = file_icon
-        && let Some(filled) = file_icon_for_file_manager(&icon, data_dir)
+        && let Some(filled) = &filled_icon
     {
-        set_custom_file_icon(appimage, &filled);
+        set_custom_file_icon(appimage, filled);
     }
-    Ok(())
+    let mime_icon = if filled_icon.is_some() {
+        file_icon_name.as_str()
+    } else {
+        desktop_id
+    };
+    let app_name = desktop_entry_name(&contents).unwrap_or(desktop_id);
+    let file_names = appimage_file_names(appimage, option_env!("APPIMAGE_NAME"));
+    register_appimage_mime_type(desktop_id, mime_icon, app_name, &file_names, data_dir)
+}
+
+/// Registers a MIME type whose icon is `icon_name` for files named any of `file_names`.
+///
+/// Unlike the custom-icon attribute, which only covers the launched file in GNOME-style file
+/// managers, this also covers copies that have never been launched, in any file manager that uses
+/// the shared MIME database.
+fn register_appimage_mime_type(
+    desktop_id: &str,
+    icon_name: &str,
+    app_name: &str,
+    file_names: &[String],
+    data_dir: &Path,
+) -> Result<()> {
+    let Some(package) = appimage_mime_package(desktop_id, icon_name, app_name, file_names) else {
+        return Ok(());
+    };
+    let mime_dir = data_dir.join("mime");
+    let package_path = mime_dir
+        .join("packages")
+        .join(format!("{desktop_id}-appimage.xml"));
+    write_if_changed(&package_path, package.as_bytes())?;
+
+    let modified = |path| fs::metadata(path).and_then(|meta| meta.modified()).ok();
+    if modified(&mime_dir.join("mime.cache")) >= modified(&package_path) {
+        return Ok(());
+    }
+    match Command::new("update-mime-database").arg(&mime_dir).status() {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => bail!("update-mime-database exited {status}"),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).context("Failed to run update-mime-database"),
+    }
+}
+
+fn appimage_mime_type(desktop_id: &str) -> String {
+    format!("application/x-{}-appimage", desktop_id.to_ascii_lowercase())
+}
+
+/// Returns the shared-mime-info package for AppImages named any of `file_names`, or `None` when
+/// there is no name to match.
+fn appimage_mime_package(
+    desktop_id: &str,
+    icon_name: &str,
+    app_name: &str,
+    file_names: &[String],
+) -> Option<String> {
+    if file_names.is_empty() {
+        return None;
+    }
+    let globs: String = file_names
+        .iter()
+        .map(|name| format!("    <glob pattern=\"{}\"/>\n", xml_escape(name)))
+        .collect();
+    // Icon themes try every name of a file's icon in the current theme before falling back to
+    // hicolor, where the logo is installed. A generic icon that the current theme provides, such
+    // as the default `application-x-generic`, would therefore be shown instead of the logo.
+    Some(format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="{mime_type}">
+    <comment>{comment} AppImage</comment>
+    <sub-class-of type="application/vnd.appimage"/>
+    <icon name="{icon}"/>
+    <generic-icon name="{icon}"/>
+{globs}  </mime-type>
+</mime-info>
+"#,
+        mime_type = appimage_mime_type(desktop_id),
+        comment = xml_escape(app_name),
+        icon = xml_escape(icon_name),
+    ))
+}
+
+/// Returns the AppImage file names to match: the launched file's name and the name it is
+/// distributed under.
+///
+/// Only exact names are kept. The shared MIME database resolves the generic `*.AppImage` pattern
+/// before any wildcard pattern, so a name containing wildcard characters would never match.
+fn appimage_file_names(appimage: &Path, distributed_name: Option<&str>) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for name in appimage
+        .file_name()
+        .and_then(OsStr::to_str)
+        .into_iter()
+        .chain(distributed_name)
+    {
+        let is_appimage = Path::new(name)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("appimage"));
+        if is_appimage && !name.contains(['*', '?', '[']) && !names.iter().any(|n| n == name) {
+            names.push(name.to_owned());
+        }
+    }
+    names
+}
+
+fn desktop_entry_name(contents: &str) -> Option<&str> {
+    let mut in_main_group = false;
+    for line in contents.lines() {
+        if let Some(group) = line.strip_prefix('[') {
+            in_main_group = group.trim_end() == "Desktop Entry]";
+        } else if in_main_group && let Some(name) = line.strip_prefix("Name=") {
+            return Some(name.trim());
+        }
+    }
+    None
+}
+
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// Returns the single desktop entry the AppImage specification requires at the root of an AppDir.
@@ -288,19 +439,19 @@ fn background_color(icon: &image::RgbaImage) -> image::Rgba<u8> {
     image::Rgba([0, 0, 0, 255])
 }
 
-fn file_icon_for_file_manager(icon: &Path, data_dir: &Path) -> Option<PathBuf> {
-    let image = image::open(icon).ok()?.into_rgba8();
-    let filled = file_icon_filling_canvas(&image);
-    let destination = data_dir.join("ai-terminal/appimage-file-icon.png");
+/// Writes `icon`, scaled to fill its canvas, to `destination` and returns whether it changed.
+fn write_filled_file_icon(icon: &Path, destination: &Path) -> Result<bool> {
+    let image = image::open(icon)
+        .with_context(|| format!("Failed to read {}", icon.display()))?
+        .into_rgba8();
     let mut bytes = Vec::new();
-    filled
+    file_icon_filling_canvas(&image)
         .write_to(
             &mut std::io::Cursor::new(&mut bytes),
             image::ImageFormat::Png,
         )
-        .ok()?;
-    write_if_changed(&destination, &bytes).ok()?;
-    Some(destination)
+        .context("Failed to encode the file icon")?;
+    write_if_changed(destination, &bytes)
 }
 
 fn set_custom_file_icon(appimage: &Path, icon: &Path) {
@@ -325,13 +476,34 @@ fn set_custom_file_icon(appimage: &Path, icon: &Path) {
     }
 }
 
-/// Creates the hicolor theme index when this data directory does not have one.
-fn ensure_hicolor_index(icons_dest: &Path) -> Result<()> {
+/// Gives this data directory a hicolor theme index.
+///
+/// Icon themes read only the first hicolor index they find and search this directory before the
+/// system ones, so the index is a copy of the system index. A narrower index would hide system
+/// icons outside the application icon directories. The minimal fallback is only written when
+/// there is no system index, and is replaced once one is available.
+fn ensure_hicolor_index(icons_dest: &Path, system_data_dirs: &[PathBuf]) -> Result<()> {
     let index = icons_dest.join("index.theme");
-    if index.is_file() {
+    let fallback_index = fallback_hicolor_index();
+    let existing = fs::read_to_string(&index).ok();
+    if existing
+        .as_ref()
+        .is_some_and(|existing| *existing != fallback_index)
+    {
         return Ok(());
     }
+    let system_index = system_data_dirs
+        .iter()
+        .find_map(|dir| fs::read(dir.join("icons/hicolor/index.theme")).ok());
+    match system_index {
+        Some(contents) => write_if_changed(&index, &contents)?,
+        None if existing.is_none() => write_if_changed(&index, fallback_index.as_bytes())?,
+        None => false,
+    };
+    Ok(())
+}
 
+fn fallback_hicolor_index() -> String {
     let directories = HICOLOR_APP_ICON_SIZES
         .iter()
         .map(|size| format!("{size}x{size}/apps"))
@@ -345,13 +517,36 @@ fn ensure_hicolor_index(icons_dest: &Path) -> Result<()> {
             "\n[{size}x{size}/apps]\nSize={size}\nContext=Applications\nType=Threshold\n"
         ));
     }
-    write_if_changed(&index, contents.as_bytes())
+    contents
 }
 
-/// Atomically replaces `path` with `contents` unless it already has exactly those contents.
-fn write_if_changed(path: &Path, contents: &[u8]) -> Result<()> {
+/// Returns the system data directories, per the XDG Base Directory specification.
+fn system_data_dirs() -> Vec<PathBuf> {
+    match std::env::var_os("XDG_DATA_DIRS") {
+        Some(dirs) if !dirs.is_empty() => std::env::split_paths(&dirs).collect(),
+        _ => vec![
+            PathBuf::from("/usr/local/share"),
+            PathBuf::from("/usr/share"),
+        ],
+    }
+}
+
+fn touch(dir: &Path) -> Result<()> {
+    fs::File::open(dir)
+        .and_then(|file| file.set_modified(SystemTime::now()))
+        .with_context(|| {
+            format!(
+                "Failed to update the modification time of {}",
+                dir.display()
+            )
+        })
+}
+
+/// Atomically replaces `path` with `contents` unless it already has exactly those contents, and
+/// returns whether it was replaced.
+fn write_if_changed(path: &Path, contents: &[u8]) -> Result<bool> {
     if fs::read(path).is_ok_and(|existing| existing == contents) {
-        return Ok(());
+        return Ok(false);
     }
     let dir = path
         .parent()
@@ -366,7 +561,7 @@ fn write_if_changed(path: &Path, contents: &[u8]) -> Result<()> {
         .with_context(|| format!("Failed to set permissions on {}", path.display()))?;
     file.persist(path)
         .with_context(|| format!("Failed to write {}", path.display()))?;
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]

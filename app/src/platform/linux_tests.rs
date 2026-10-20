@@ -83,9 +83,9 @@ fn installs_desktop_entry_and_icons() {
     fs::write(icon_dir.join("unrelated.png"), b"other").unwrap();
     let appimage = Path::new("/home/user/AiTerminal.AppImage");
 
-    install_desktop_integration(appimage, appdir.path(), data_dir.path()).unwrap();
+    install_desktop_integration(appimage, appdir.path(), data_dir.path(), &[]).unwrap();
     // Reinstalling over up-to-date files is a no-op.
-    install_desktop_integration(appimage, appdir.path(), data_dir.path()).unwrap();
+    install_desktop_integration(appimage, appdir.path(), data_dir.path(), &[]).unwrap();
 
     let installed_entry = data_dir
         .path()
@@ -107,6 +107,114 @@ fn installs_desktop_entry_and_icons() {
     let index = fs::read_to_string(data_dir.path().join("icons/hicolor/index.theme")).unwrap();
     assert!(index.contains("512x512/apps"));
     assert!(index.contains("48x48/apps"));
+    let mime_package = fs::read_to_string(
+        data_dir
+            .path()
+            .join("mime/packages/dev.aiterminal.AiTerminalOss-appimage.xml"),
+    )
+    .unwrap();
+    // The placeholder PNG cannot be decoded, so the type falls back to the plain application icon.
+    assert!(mime_package.contains("<icon name=\"dev.aiterminal.AiTerminalOss\"/>"));
+    assert!(mime_package.contains("<glob pattern=\"AiTerminal.AppImage\"/>"));
+}
+
+#[test]
+fn installs_filled_file_icon_for_mime_type() {
+    let appdir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    fs::write(
+        appdir.path().join("dev.aiterminal.AiTerminalOss.desktop"),
+        DESKTOP_ENTRY,
+    )
+    .unwrap();
+    let icon_dir = appdir.path().join("usr/share/icons/hicolor/64x64/apps");
+    fs::create_dir_all(&icon_dir).unwrap();
+    RgbaImage::from_pixel(64, 64, Rgba([40, 43, 49, 255]))
+        .save(icon_dir.join("dev.aiterminal.AiTerminalOss.png"))
+        .unwrap();
+
+    install_desktop_integration(
+        Path::new("/home/user/AiTerminal.AppImage"),
+        appdir.path(),
+        data_dir.path(),
+        &[],
+    )
+    .unwrap();
+
+    let filled = data_dir
+        .path()
+        .join("icons/hicolor/64x64/apps/dev.aiterminal.AiTerminalOss-appimage.png");
+    assert_eq!(
+        image::open(filled).unwrap().into_rgba8().dimensions(),
+        (64, 64)
+    );
+    let mime_package = fs::read_to_string(
+        data_dir
+            .path()
+            .join("mime/packages/dev.aiterminal.AiTerminalOss-appimage.xml"),
+    )
+    .unwrap();
+    assert!(mime_package.contains("<icon name=\"dev.aiterminal.AiTerminalOss-appimage\"/>"));
+}
+
+#[test]
+fn mime_package_matches_appimage_names() {
+    let package = appimage_mime_package(
+        "dev.aiterminal.AiTerminalOss",
+        "dev.aiterminal.AiTerminalOss-appimage",
+        "AI & Terminal",
+        &[
+            "AI-Terminal-x86_64.AppImage".to_owned(),
+            "a\"b.AppImage".to_owned(),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        package,
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-dev.aiterminal.aiterminaloss-appimage">
+    <comment>AI &amp; Terminal AppImage</comment>
+    <sub-class-of type="application/vnd.appimage"/>
+    <icon name="dev.aiterminal.AiTerminalOss-appimage"/>
+    <generic-icon name="dev.aiterminal.AiTerminalOss-appimage"/>
+    <glob pattern="AI-Terminal-x86_64.AppImage"/>
+    <glob pattern="a&quot;b.AppImage"/>
+  </mime-type>
+</mime-info>
+"#
+    );
+    assert!(appimage_mime_package("id", "icon", "App", &[]).is_none());
+}
+
+#[test]
+fn appimage_file_names_keep_exact_appimage_names() {
+    assert_eq!(
+        appimage_file_names(
+            Path::new("/home/user/Renamed.appimage"),
+            Some("AI-Terminal-x86_64.AppImage")
+        ),
+        ["Renamed.appimage", "AI-Terminal-x86_64.AppImage"]
+    );
+    assert_eq!(
+        appimage_file_names(
+            Path::new("/home/user/AI-Terminal-x86_64.AppImage"),
+            Some("AI-Terminal-x86_64.AppImage")
+        ),
+        ["AI-Terminal-x86_64.AppImage"]
+    );
+    assert!(appimage_file_names(Path::new("/home/user/ai-terminal"), None).is_empty());
+    assert!(appimage_file_names(Path::new("/home/user/AI [1].AppImage"), None).is_empty());
+}
+
+#[test]
+fn desktop_entry_name_reads_main_group() {
+    assert_eq!(desktop_entry_name(DESKTOP_ENTRY), Some("AiTerminalOss"));
+    assert_eq!(
+        desktop_entry_name("[Desktop Action new-window]\nName=New Window\n"),
+        None
+    );
 }
 
 #[test]
@@ -134,9 +242,46 @@ fn install_requires_a_single_root_desktop_file() {
     let data_dir = tempfile::tempdir().unwrap();
     let appimage = Path::new("/home/user/AiTerminal.AppImage");
 
-    assert!(install_desktop_integration(appimage, appdir.path(), data_dir.path()).is_err());
+    assert!(install_desktop_integration(appimage, appdir.path(), data_dir.path(), &[]).is_err());
 
     fs::write(appdir.path().join("a.desktop"), DESKTOP_ENTRY).unwrap();
     fs::write(appdir.path().join("b.desktop"), DESKTOP_ENTRY).unwrap();
-    assert!(install_desktop_integration(appimage, appdir.path(), data_dir.path()).is_err());
+    assert!(install_desktop_integration(appimage, appdir.path(), data_dir.path(), &[]).is_err());
+}
+
+#[test]
+fn hicolor_index_copies_system_index() {
+    let icons_dest = tempfile::tempdir().unwrap();
+    let missing_system_dir = tempfile::tempdir().unwrap();
+    let system_dir = tempfile::tempdir().unwrap();
+    let system_index = "[Icon Theme]\nName=Hicolor\nDirectories=scalable/apps\n";
+    fs::create_dir_all(system_dir.path().join("icons/hicolor")).unwrap();
+    fs::write(
+        system_dir.path().join("icons/hicolor/index.theme"),
+        system_index,
+    )
+    .unwrap();
+    let index = icons_dest.path().join("index.theme");
+
+    ensure_hicolor_index(
+        icons_dest.path(),
+        &[missing_system_dir.path().to_path_buf()],
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(&index).unwrap(),
+        fallback_hicolor_index()
+    );
+
+    let system_dirs = [
+        missing_system_dir.path().to_path_buf(),
+        system_dir.path().to_path_buf(),
+    ];
+    ensure_hicolor_index(icons_dest.path(), &system_dirs).unwrap();
+    assert_eq!(fs::read_to_string(&index).unwrap(), system_index);
+
+    let custom_index = "[Icon Theme]\nName=Hicolor\nDirectories=custom\n";
+    fs::write(&index, custom_index).unwrap();
+    ensure_hicolor_index(icons_dest.path(), &system_dirs).unwrap();
+    assert_eq!(fs::read_to_string(&index).unwrap(), custom_index);
 }
