@@ -10,8 +10,23 @@ use ai_terminal_ui::{AppContext, SingletonEntity};
 /// AI Terminal icon glyph character
 const AI_TERMINAL_GLYPH: &str = "\u{E500}";
 
-/// Creates a shimmering text element with the AI Terminal glyph.
+/// Creates a shimmering text element with the embedded AI Terminal glyph.
 pub fn shimmering_ai_terminal_loading_text(
+    text: impl Into<String>,
+    font_size: f32,
+    shimmer_handle: ShimmeringTextStateHandle,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    shimmering_loading_text(
+        format!("{} {}", AI_TERMINAL_GLYPH, text.into()),
+        font_size,
+        shimmer_handle,
+        app,
+    )
+}
+
+/// Creates a shimmering loading label without a leading brand glyph.
+pub fn shimmering_loading_text(
     text: impl Into<String>,
     font_size: f32,
     shimmer_handle: ShimmeringTextStateHandle,
@@ -27,9 +42,8 @@ pub fn shimmering_ai_terminal_loading_text(
     // Hardcoded shimmer config for consistent animation
     let config = ShimmerConfig::default();
 
-    // Create a single shimmering element with glyph and text
     ShimmeringTextElement::new(
-        format!("{} {}", AI_TERMINAL_GLYPH, text.into()),
+        text.into(),
         appearance.ui_font_family(),
         font_size,
         base_color,

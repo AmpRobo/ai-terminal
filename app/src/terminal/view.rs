@@ -296,7 +296,7 @@ use crate::ai::execution_profiles::ExecutionProfileId;
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::get_relevant_files::controller::GetRelevantFilesController;
 use crate::ai::llms::{LLMId, LLMModelHost, LLMPreferences};
-use crate::ai::loading::shimmering_ai_terminal_loading_text;
+use crate::ai::loading::shimmering_loading_text;
 #[cfg(feature = "local_fs")]
 use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::ai::predict::prompt_suggestions::{
@@ -13890,14 +13890,34 @@ impl TerminalView {
             })
             .unwrap_or_else(|| "Starting shell...".to_string());
 
-        let shimmer_element = shimmering_ai_terminal_loading_text(
+        let font_size = appearance.monospace_font_size() - 2.;
+        let theme = appearance.theme();
+        // Brand mark is the A logo; Roboto's private-use glyph is still the old Warp mark.
+        let icon = Container::new(
+            ConstrainedBox::new(
+                icons::Icon::AiTerminal
+                    .to_ai_terminal_ui_icon(theme.disabled_text_color(theme.surface_1()))
+                    .finish(),
+            )
+            .with_width(font_size)
+            .with_height(font_size)
+            .finish(),
+        )
+        .with_margin_right(4.)
+        .finish();
+        let shimmer_element = shimmering_loading_text(
             message,
-            appearance.monospace_font_size() - 2.,
+            font_size,
             self.remote_server_shimmer_handle.clone(),
             app,
         );
+        let row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(icon)
+            .with_child(shimmer_element)
+            .finish();
 
-        Container::new(shimmer_element)
+        Container::new(row)
             .with_padding_left(*PADDING_LEFT)
             .with_vertical_padding(8.)
             .finish()

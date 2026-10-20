@@ -1,7 +1,3 @@
-<a href="https://www.ai-terminal.invalid">
-    <img width="1024" alt="AI Terminal Agentic Development Environment product preview" src="https://github.com/user-attachments/assets/9976b2da-2edd-4604-a36c-8fd53719c6d4" />
-</a>
-&nbsp;
 <p align="center">
   <a href="https://ai-terminal.invalid/factories"><img height="20" alt="Built with AI Terminal" src="https://raw.githubusercontent.com/warpdotdev/brand-assets/main/Github/Built-With-AiTerminal-Export@2x.png" /></a>
 </p>
