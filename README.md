@@ -76,6 +76,42 @@ To build and run AI Terminal from source:
 
 See [AGENTS.md](AGENTS.md) for the full engineering guide, including coding style, testing, and platform-specific notes.
 
+### Building Linux Packages
+
+On Linux, `./script/build_linux_packages` builds the GUI `.deb` and AppImage from one GUI compile and one SSH-extension compile. The default channel is `oss`.
+
+```bash
+./script/build_linux_packages
+```
+
+Packages are written to:
+
+```text
+target/release-lto/bundle/linux/AI-Terminal-<arch>.AppImage
+target/release-lto/bundle/linux/ai-terminal_<version>_<deb-arch>.deb
+```
+
+`<arch>` is `x86_64` or `aarch64`, and `<deb-arch>` is `amd64` or `arm64`. Without `--release-tag`, the version is `0.1.0`. If `CARGO_TARGET_DIR` is set, the same relative paths are written under that directory.
+
+```text
+./script/build_linux_packages [--channel CHANNEL] [--packages LIST]
+    [--release-tag TAG] [--debug] [--skip-build] [--arch ARCH]
+    [--features FEATURES] [--install-system-deps]
+```
+
+| Option | Description |
+| --- | --- |
+| `--channel` | `oss` (default), `local`, `dev`, `preview`, or `stable` |
+| `--packages` | Comma-separated `appimage` and/or `deb` (default: `appimage,deb`) |
+| `--release-tag` | `GIT_RELEASE_TAG` used for the `.deb` version (default: `v0.1.0`) |
+| `--debug` | Cargo dev profile instead of `release-lto` |
+| `--skip-build` | Package an existing binary |
+| `--arch` | `x86_64` or `aarch64`. Must match this machine. The GUI binary and the SSH extension are both compiled for it. |
+| `--features` | Extra Cargo features, appended to the channel set |
+| `--install-system-deps` | Install apt build and packaging packages (uses sudo) |
+
+`local`, `dev`, `preview`, and `stable` need `ai-terminal-channel-config` on `PATH` (`./script/install_channel_config`). The script only runs on Linux, and `--arch` must match the host. See [how_to_build.md](how_to_build.md) for the full build flow.
+
 ## Joining the Team
 
 Interested in joining the team? See our [open roles](https://www.ai-terminal.invalid/careers).
