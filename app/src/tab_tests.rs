@@ -5,7 +5,7 @@ use ai_terminal_ui::platform::keyboard::KeyCode;
 use super::{
     SelectedTabColor, ShortcutModifierKind, TAB_ACTIVATE_BINDING_NAMES,
     TAB_ACTIVATE_LAST_BINDING_NAME, TabShortcutModifierState, next_tab_color,
-    tab_activate_binding_name, tab_group_menu_entry_flags,
+    resolve_tab_bar_color, tab_activate_binding_name, tab_group_menu_entry_flags,
 };
 use crate::themes::theme::AnsiColorIdentifier;
 use crate::ui_components::color_dot::TAB_COLOR_OPTIONS;
@@ -185,4 +185,39 @@ fn next_tab_color_follows_the_canonical_palette_and_clears_after_the_last_color(
         next_tab_color(Some(AnsiColorIdentifier::White)),
         SelectedTabColor::Color(TAB_COLOR_OPTIONS[0])
     );
+}
+
+#[test]
+fn tab_bar_color_keeps_local_tabs_neutral_and_marks_ssh_tabs() {
+    let local = resolve_tab_bar_color(SelectedTabColor::Unset, None, Some(false));
+    assert_eq!(local.color, None);
+    assert!(!local.ssh_remote);
+
+    let ssh = resolve_tab_bar_color(SelectedTabColor::Unset, None, Some(true));
+    assert_eq!(ssh.color, None);
+    assert!(ssh.ssh_remote);
+
+    let manual = resolve_tab_bar_color(
+        SelectedTabColor::Color(AnsiColorIdentifier::Red),
+        Some(AnsiColorIdentifier::Yellow),
+        Some(true),
+    );
+    assert_eq!(manual.color, Some(AnsiColorIdentifier::Red));
+    assert!(!manual.ssh_remote);
+
+    let directory = resolve_tab_bar_color(
+        SelectedTabColor::Unset,
+        Some(AnsiColorIdentifier::Yellow),
+        Some(true),
+    );
+    assert_eq!(directory.color, Some(AnsiColorIdentifier::Yellow));
+    assert!(!directory.ssh_remote);
+
+    let cleared = resolve_tab_bar_color(SelectedTabColor::Cleared, None, Some(true));
+    assert_eq!(cleared.color, None);
+    assert!(!cleared.ssh_remote);
+
+    let not_a_shell = resolve_tab_bar_color(SelectedTabColor::Unset, None, None);
+    assert_eq!(not_a_shell.color, None);
+    assert!(!not_a_shell.ssh_remote);
 }

@@ -2,19 +2,19 @@ use ai_terminal_core::ui::Icon;
 use ai_terminal_core::ui::color::coloru_with_opacity;
 use ai_terminal_core::ui::theme::Fill;
 use ai_terminal_ui::elements::{
-    ChildAnchor, ConstrainedBox, Container, Highlight, Hoverable, MouseStateHandle,
-    OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Shrinkable, Stack, Text,
+    ConstrainedBox, Container, DispatchEventResult, EventHandler, Highlight, MouseStateHandle,
+    ParentElement, Shrinkable, Text,
 };
 use ai_terminal_ui::fonts::{Properties, Weight};
 use ai_terminal_ui::prelude::{Align, CrossAxisAlignment, Flex, MainAxisAlignment, MainAxisSize};
 use ai_terminal_ui::scene::{CornerRadius, Radius};
 use ai_terminal_ui::text_layout::ClipConfig;
+use ai_terminal_ui::ui_components::button::ButtonTooltipPosition;
 use ai_terminal_ui::ui_components::components::UiComponent;
 use ai_terminal_ui::{AppContext, Element, SingletonEntity};
 use chrono::{DateTime, Local};
 use fuzzy_match::FuzzyMatchResult;
 use ordered_float::OrderedFloat;
-use pathfinder_geometry::vector::vec2f;
 
 use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
 use crate::ai::conversation_status_ui::{STATUS_ELEMENT_PADDING, render_status_element};
@@ -138,42 +138,34 @@ impl InlineHistoryItem {
         };
 
         let mouse_state = self.delete_button_mouse_state.clone();
+        let ui_builder = appearance.ui_builder().clone();
+        // The row around this button accepts or selects on mouse up. Handle the click
+        // on an event handler that stops propagation, so the press removes the row
+        // instead of opening or previewing it.
         let button = appearance
             .ui_builder()
-            .close_button(font_size, mouse_state.clone())
-            .build()
-            .on_click(move |ctx, _, _| {
-                ctx.dispatch_typed_action(DeleteInlineHistoryItem {
-                    text: text.clone(),
-                    kind,
-                });
+            .close_button(font_size, mouse_state)
+            .with_tooltip(move || {
+                ui_builder
+                    .tool_tip("Delete from history".to_string())
+                    .build()
+                    .finish()
             })
+            .with_tooltip_position(ButtonTooltipPosition::AboveRight)
+            .build()
             .finish();
 
         Some(
-            Hoverable::new(mouse_state, move |state| {
-                if !state.is_hovered() {
-                    return button;
-                }
-
-                let mut stack = Stack::new().with_child(button);
-                let tooltip = appearance
-                    .ui_builder()
-                    .tool_tip("Delete from history".to_string())
-                    .build()
-                    .finish();
-                stack.add_positioned_overlay_child(
-                    tooltip,
-                    OffsetPositioning::offset_from_parent(
-                        vec2f(0., -4.),
-                        ParentOffsetBounds::WindowByPosition,
-                        ParentAnchor::TopRight,
-                        ChildAnchor::BottomRight,
-                    ),
-                );
-                stack.finish()
-            })
-            .finish(),
+            EventHandler::new(button)
+                .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+                .on_left_mouse_up(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(DeleteInlineHistoryItem {
+                        text: text.clone(),
+                        kind,
+                    });
+                    DispatchEventResult::StopPropagation
+                })
+                .finish(),
         )
     }
 }

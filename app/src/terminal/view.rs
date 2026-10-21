@@ -8281,6 +8281,31 @@ impl TerminalView {
         Some(self.session_is_local(self.active_block_session_id()?, ctx))
     }
 
+    /// Whether the active shell is an SSH session on another host.
+    ///
+    /// `Some(false)` is a local shell, including WSL and a terminal whose shell
+    /// has not bootstrapped yet. `None` means this pane is not a local-vs-SSH
+    /// terminal: a cloud agent, a shared-session viewer, or a transcript.
+    pub fn active_session_is_ssh_remote(&self, ctx: &AppContext) -> Option<bool> {
+        if self.is_cloud_agent_session(ctx) {
+            return None;
+        }
+        {
+            let model = self.model.lock();
+            if model.is_shared_session_viewer() || model.is_conversation_transcript_viewer() {
+                return None;
+            }
+        }
+        let Some(session_id) = self.active_block_session_id() else {
+            return Some(false);
+        };
+        let Some(session) = self.sessions.as_ref(ctx).get(session_id) else {
+            return Some(false);
+        };
+        // WSL reports a different hostname but is still this machine.
+        Some(!session.is_local() && !session.is_wsl())
+    }
+
     /// Returns the active session's launch shell, if it is specified.
     /// Returns None if there is no active session or if the current session does not
     /// have a launch shell.

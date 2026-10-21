@@ -37,6 +37,17 @@ impl UpArrowHistoryConfig {
     }
 }
 
+/// History rows are shown trimmed, and the delete button records that trimmed text.
+/// Shell history may still store the surrounding whitespace.
+fn ignored_text_matches(ignored: &HashSet<String>, text: &str) -> bool {
+    let trimmed = text.trim();
+    ignored.contains(text)
+        || ignored.contains(trimmed)
+        || ignored
+            .iter()
+            .any(|ignored_text| ignored_text.trim() == trimmed)
+}
+
 fn sort_and_dedupe_suggestions<'a>(
     mut suggestions: Vec<HistoryInputSuggestion<'a>>,
     session_id: Option<SessionId>,
@@ -92,7 +103,7 @@ fn prompt_history_for_terminal_surface(
     let suggestions = BlocklistAIHistoryModel::handle(app)
         .as_ref(app)
         .all_ai_queries(Some(terminal_surface_id))
-        .filter(|entry| !ignored_prompts.contains(&entry.query_text))
+        .filter(|entry| !ignored_text_matches(&ignored_prompts, &entry.query_text))
         .filter(|entry| !entry.query_text.trim().is_empty())
         .map(|entry| HistoryInputSuggestion::AIQuery { entry })
         .collect();
@@ -115,9 +126,13 @@ impl History {
         config: UpArrowHistoryConfig,
         app: &'a AppContext,
     ) -> Vec<HistoryInputSuggestion<'a>> {
-        let ignored_suggestions = app
-            .has_singleton_model::<IgnoredSuggestionsModel>()
-            .then(|| IgnoredSuggestionsModel::handle(app).as_ref(app));
+        let ignored_commands = if app.has_singleton_model::<IgnoredSuggestionsModel>() {
+            IgnoredSuggestionsModel::handle(app)
+                .as_ref(app)
+                .get_ignored_suggestions_for_type(SuggestionType::ShellCommand)
+        } else {
+            HashSet::new()
+        };
 
         let include_agent_commands = if app.has_singleton_model::<AISettings>() {
             *AISettings::handle(app)
@@ -131,11 +146,7 @@ impl History {
             .and_then(|session_id| self.commands(session_id))
             .unwrap_or_default()
             .into_iter()
-            .filter(|entry| {
-                ignored_suggestions.is_none_or(|ignored_suggestions| {
-                    !ignored_suggestions.is_ignored(&entry.command, SuggestionType::ShellCommand)
-                })
-            })
+            .filter(move |entry| !ignored_text_matches(&ignored_commands, &entry.command))
             .filter(move |entry| include_agent_commands || !entry.is_agent_executed)
             .map(|entry| HistoryInputSuggestion::Command { entry });
 

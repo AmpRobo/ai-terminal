@@ -20455,7 +20455,7 @@ impl Workspace {
                     row.add_child(self.render_tab_hover_indicator(appearance));
                 }
                 let tab = &self.tabs[idx];
-                let effective_color = tab.color();
+                let effective_color = tab.resolved_bar_color(ctx);
                 // Highlight the member when a drag is hovering directly over it.
                 let is_drag_target = self.hovered_tab_index == Some(TabBarHoverIndex::OverTab(idx));
                 let member = TabComponent::new(
@@ -20890,7 +20890,7 @@ impl Workspace {
             // outer `SavePosition`, `Draggable`, and `DropTarget` wrappers
             // so the chip overlay doesn't pollute the target window's
             // position cache (see `TabComponent::for_drag_ghost`).
-            let effective_color = tab.color();
+            let effective_color = tab.resolved_bar_color(ctx);
             TabComponent::new(
                 tab_index,
                 tab_bar_state,

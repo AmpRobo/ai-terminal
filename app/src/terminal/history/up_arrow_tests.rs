@@ -320,6 +320,43 @@ fn combined_history_excludes_ignored_prompts_and_commands() {
 }
 
 #[test]
+fn combined_history_excludes_whitespace_variants_of_ignored_text() {
+    App::test((), |mut app| async move {
+        let terminal_surface_id = EntityId::new();
+        let session_id = SessionId::from(1);
+        app.add_singleton_model(|_| {
+            build_history_model(vec!["keep prompt".to_owned(), " ignore prompt ".to_owned()])
+        });
+        add_command_history(
+            &mut app,
+            session_id,
+            vec![
+                command_entry(session_id, "keep command", 0, false, None),
+                command_entry(session_id, " ignore command ", 1, false, None),
+            ],
+        )
+        .await;
+        app.add_singleton_model(|_| {
+            IgnoredSuggestionsModel::new(vec![
+                ("ignore prompt".to_owned(), SuggestionType::AIQuery),
+                ("ignore command".to_owned(), SuggestionType::ShellCommand),
+            ])
+        });
+
+        app.read(|ctx| {
+            let history = combined_history(terminal_surface_id, session_id, true, ctx);
+            assert_eq!(
+                history
+                    .iter()
+                    .map(TestHistoryItem::text)
+                    .collect::<Vec<_>>(),
+                vec!["keep prompt", "keep command"]
+            );
+        });
+    });
+}
+
+#[test]
 fn combined_history_respects_agent_command_setting() {
     App::test((), |mut app| async move {
         initialize_settings_for_tests(&mut app);

@@ -304,6 +304,61 @@ impl SelectedTabColor {
     }
 }
 
+/// Deep navy for SSH remote tabs. Terminal ANSI blue is a bright accent; this
+/// stays in the navy range after the tab bar fades it over the background.
+const SSH_REMOTE_TAB_BLUE: u32 = 0x1A448CFF;
+/// Same navy, lightened only enough for an inactive title to stay readable.
+const SSH_REMOTE_TAB_LABEL_BLUE: u32 = 0x5A86C8FF;
+
+/// Tab-bar color after applying manual, directory, and session-location rules.
+#[derive(Clone, Copy)]
+pub(crate) struct ResolvedTabBarColor {
+    pub color: Option<AnsiColorIdentifier>,
+    /// SSH remote shell with no manual or directory color.
+    pub ssh_remote: bool,
+}
+
+/// Resolves the tab-bar color.
+///
+/// Manual selection wins, then a directory color. An explicit clear stays
+/// uncolored. Local shells keep the normal tab chrome. An SSH remote shell
+/// with neither override uses a deep navy, and its inactive title uses that
+/// navy so it stays distinguishable.
+pub(crate) fn resolve_tab_bar_color(
+    selected: SelectedTabColor,
+    directory_color: Option<AnsiColorIdentifier>,
+    session_is_ssh_remote: Option<bool>,
+) -> ResolvedTabBarColor {
+    match selected {
+        SelectedTabColor::Color(color) => ResolvedTabBarColor {
+            color: Some(color),
+            ssh_remote: false,
+        },
+        SelectedTabColor::Cleared => ResolvedTabBarColor {
+            color: None,
+            ssh_remote: false,
+        },
+        SelectedTabColor::Unset => {
+            if let Some(color) = directory_color {
+                ResolvedTabBarColor {
+                    color: Some(color),
+                    ssh_remote: false,
+                }
+            } else if session_is_ssh_remote == Some(true) {
+                ResolvedTabBarColor {
+                    color: None,
+                    ssh_remote: true,
+                }
+            } else {
+                ResolvedTabBarColor {
+                    color: None,
+                    ssh_remote: false,
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn next_tab_color(current: Option<AnsiColorIdentifier>) -> SelectedTabColor {
     match current.and_then(|color| {
         TAB_COLOR_OPTIONS
@@ -396,6 +451,20 @@ impl TabData {
     /// The resolved tab color: manual selection takes priority over directory default.
     pub fn color(&self) -> Option<AnsiColorIdentifier> {
         self.selected_color.resolve(self.default_directory_color)
+    }
+
+    /// Tab-bar fill, including the local-vs-SSH default when no color is chosen.
+    pub(crate) fn resolved_bar_color(&self, ctx: &AppContext) -> ResolvedTabBarColor {
+        let session_is_ssh_remote = self
+            .pane_group
+            .as_ref(ctx)
+            .active_session_view(ctx)
+            .and_then(|view| view.as_ref(ctx).active_session_is_ssh_remote(ctx));
+        resolve_tab_bar_color(
+            self.selected_color,
+            self.default_directory_color,
+            session_is_ssh_remote,
+        )
     }
 
     /// True when this tab's top-level name is not shown because it is a member of
@@ -1124,10 +1193,16 @@ impl TabStyles {
 
     /// Returns the default styling (based on the current settings and ui builder, hence not
     /// implementing Default trait).
-    fn default(appearance: &Appearance, tab_color: Option<AnsiColorIdentifier>) -> TabStyles {
+    fn default(appearance: &Appearance, resolved: ResolvedTabBarColor) -> TabStyles {
         let theme = appearance.theme();
-        let active_tab_bar_color: Option<ThemeFill> =
-            tab_color.map(|color| color.to_ansi_color(&theme.terminal_colors().normal).into());
+        let paint_color = if let Some(color) = resolved.color {
+            Some(color.to_ansi_color(&theme.terminal_colors().normal).into())
+        } else if resolved.ssh_remote {
+            Some(ColorU::from_u32(SSH_REMOTE_TAB_BLUE))
+        } else {
+            None
+        };
+        let active_tab_bar_color: Option<ThemeFill> = paint_color.map(Into::into);
         let error_color = theme.ui_error_color();
         let sharing_color = shared_session_indicator_color(appearance);
         let background = active_tab_bar_color.map(|color| {
@@ -1136,13 +1211,20 @@ impl TabStyles {
                 color.into(),
             ))
         });
+        // The active title stays the high-contrast active color, since it sits
+        // on a much stronger tint.
+        let inactive_font_color = if resolved.ssh_remote {
+            ColorU::from_u32(SSH_REMOTE_TAB_LABEL_BLUE)
+        } else {
+            theme.nonactive_ui_text_color().into()
+        };
         TabStyles {
             background,
             error_color,
             sharing_color,
             synced_input_indicator_color: ColorU::from_u32(TAB_INDICATOR_SYNCED_COLOR),
             default: UiComponentStyles::default()
-                .set_font_color(theme.nonactive_ui_text_color().into())
+                .set_font_color(inactive_font_color)
                 .set_font_family_id(appearance.ui_builder().ui_font_family())
                 .set_font_size(appearance.ui_builder().ui_font_size()),
             active: UiComponentStyles::default()
@@ -1244,6 +1326,7 @@ impl<'a> TabComponent<'a> {
             pane_group_id,
             pane_id,
         };
+        let resolved_color = tab.resolved_bar_color(ctx);
         Self {
             tab: tab.clone(),
             tab_bar,
@@ -1251,7 +1334,7 @@ impl<'a> TabComponent<'a> {
             title,
             has_custom_title: tab.pane_group.as_ref(ctx).custom_title(ctx).is_some(),
             tab_index,
-            styles: TabStyles::default(appearance, tab.color()),
+            styles: TabStyles::default(appearance, resolved_color),
             ui_builder: appearance.ui_builder().clone(),
             indicator,
             close_button_position,
@@ -1289,8 +1372,8 @@ impl<'a> TabComponent<'a> {
 
     /// Overrides the effective color used to build tab styles. Used when the
     /// tab's color should be driven by its group rather than its own data.
-    pub fn with_effective_color(mut self, color: Option<AnsiColorIdentifier>) -> Self {
-        self.styles = TabStyles::default(self.appearance, color);
+    pub fn with_effective_color(mut self, resolved: ResolvedTabBarColor) -> Self {
+        self.styles = TabStyles::default(self.appearance, resolved);
         self
     }
 
