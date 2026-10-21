@@ -2,16 +2,19 @@ use ai_terminal_core::ui::Icon;
 use ai_terminal_core::ui::color::coloru_with_opacity;
 use ai_terminal_core::ui::theme::Fill;
 use ai_terminal_ui::elements::{
-    ConstrainedBox, Container, Highlight, ParentElement, Shrinkable, Text,
+    ChildAnchor, ConstrainedBox, Container, Highlight, Hoverable, MouseStateHandle,
+    OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Shrinkable, Stack, Text,
 };
 use ai_terminal_ui::fonts::{Properties, Weight};
 use ai_terminal_ui::prelude::{Align, CrossAxisAlignment, Flex, MainAxisAlignment, MainAxisSize};
 use ai_terminal_ui::scene::{CornerRadius, Radius};
 use ai_terminal_ui::text_layout::ClipConfig;
+use ai_terminal_ui::ui_components::components::UiComponent;
 use ai_terminal_ui::{AppContext, Element, SingletonEntity};
 use chrono::{DateTime, Local};
 use fuzzy_match::FuzzyMatchResult;
 use ordered_float::OrderedFloat;
+use pathfinder_geometry::vector::vec2f;
 
 use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
 use crate::ai::conversation_status_ui::{STATUS_ELEMENT_PADDING, render_status_element};
@@ -19,6 +22,7 @@ use crate::appearance::Appearance;
 use crate::search::{ItemHighlightState, SearchItem};
 use crate::terminal::history::LinkedWorkflowData;
 use crate::terminal::input::inline_history::data_source::AcceptHistoryItem;
+use crate::terminal::input::inline_history::{DeletableHistoryKind, DeleteInlineHistoryItem};
 use crate::terminal::input::inline_menu::styles as inline_styles;
 use crate::util::time_format::format_approx_duration_from_now_utc;
 
@@ -29,6 +33,7 @@ pub struct InlineHistoryItem {
     prefix_match_len: usize,
     score: OrderedFloat<f64>,
     timestamp: DateTime<Local>,
+    delete_button_mouse_state: MouseStateHandle,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +69,7 @@ impl InlineHistoryItem {
             prefix_match_len: 0,
             score: OrderedFloat(f64::MIN),
             timestamp,
+            delete_button_mouse_state: MouseStateHandle::default(),
         }
     }
 
@@ -81,6 +87,7 @@ impl InlineHistoryItem {
             prefix_match_len: 0,
             score: OrderedFloat(f64::MIN),
             timestamp,
+            delete_button_mouse_state: MouseStateHandle::default(),
         }
     }
 
@@ -91,6 +98,7 @@ impl InlineHistoryItem {
             prefix_match_len: 0,
             score: OrderedFloat(f64::MIN),
             timestamp,
+            delete_button_mouse_state: MouseStateHandle::default(),
         }
     }
 
@@ -107,6 +115,66 @@ impl InlineHistoryItem {
     pub fn with_score(mut self, score: OrderedFloat<f64>) -> Self {
         self.score = score;
         self
+    }
+
+    fn render_delete_button(
+        &self,
+        font_size: f32,
+        appearance: &Appearance,
+    ) -> Option<Box<dyn Element>> {
+        let (text, kind) = match &self.item_type {
+            HistoryItemType::Command { command, .. } => {
+                (command.clone(), DeletableHistoryKind::Command)
+            }
+            HistoryItemType::AIPrompt { query_text } => {
+                (query_text.clone(), DeletableHistoryKind::AIPrompt)
+            }
+            HistoryItemType::Conversation {
+                conversation_id, ..
+            } => (
+                conversation_id.to_string(),
+                DeletableHistoryKind::Conversation,
+            ),
+        };
+
+        let mouse_state = self.delete_button_mouse_state.clone();
+        let button = appearance
+            .ui_builder()
+            .close_button(font_size, mouse_state.clone())
+            .build()
+            .on_click(move |ctx, _, _| {
+                ctx.dispatch_typed_action(DeleteInlineHistoryItem {
+                    text: text.clone(),
+                    kind,
+                });
+            })
+            .finish();
+
+        Some(
+            Hoverable::new(mouse_state, move |state| {
+                if !state.is_hovered() {
+                    return button;
+                }
+
+                let mut stack = Stack::new().with_child(button);
+                let tooltip = appearance
+                    .ui_builder()
+                    .tool_tip("Delete from history".to_string())
+                    .build()
+                    .finish();
+                stack.add_positioned_overlay_child(
+                    tooltip,
+                    OffsetPositioning::offset_from_parent(
+                        vec2f(0., -4.),
+                        ParentOffsetBounds::WindowByPosition,
+                        ParentAnchor::TopRight,
+                        ChildAnchor::BottomRight,
+                    ),
+                );
+                stack.finish()
+            })
+            .finish(),
+        )
     }
 }
 
@@ -212,11 +280,22 @@ impl SearchItem for InlineHistoryItem {
             );
         }
 
+        let mut command_row = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(Shrinkable::new(1., text.finish()).finish());
+        if let Some(delete_button) = self.render_delete_button(font_size, appearance) {
+            command_row.add_child(
+                Container::new(delete_button)
+                    .with_margin_left(inline_styles::ICON_MARGIN)
+                    .finish(),
+            );
+        }
+
         let mut primary_row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_child(Shrinkable::new(1., text.finish()).finish());
+            .with_child(Shrinkable::new(1., command_row.finish()).finish());
 
         let timestamp = Text::new_inline(
             format_approx_duration_from_now_utc(self.timestamp.to_utc()),

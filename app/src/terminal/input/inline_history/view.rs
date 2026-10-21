@@ -6,7 +6,8 @@ use ai_terminal_core::ui::theme::Fill;
 use ai_terminal_core::ui::theme::color::internal_colors;
 use ai_terminal_ui::elements::ChildView;
 use ai_terminal_ui::{
-    AppContext, Element, Entity, EntityId, ModelHandle, View, ViewContext, ViewHandle,
+    AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle,
 };
 use pathfinder_color::ColorU;
 
@@ -16,11 +17,13 @@ use crate::features::FeatureFlag;
 use crate::search::data_source::{Query, QueryFilter};
 use crate::search::mixer::{SearchMixer, SearchMixerEvent};
 use crate::settings_view::SettingsSection;
+use crate::suggestions::ignored_suggestions_model::{IgnoredSuggestionsModel, SuggestionType};
 use crate::terminal::history::LinkedWorkflowData;
 use crate::terminal::input::buffer_model::{InputBufferModel, InputBufferUpdateEvent};
 use crate::terminal::input::inline_history::data_source::{
     AcceptHistoryItem, InlineHistoryMenuDataSource,
 };
+use crate::terminal::input::inline_history::{DeletableHistoryKind, DeleteInlineHistoryItem};
 use crate::terminal::input::inline_menu::{
     InlineMenuEvent, InlineMenuHeaderConfig, InlineMenuModel, InlineMenuPositioner,
     InlineMenuTabConfig, InlineMenuView,
@@ -428,9 +431,9 @@ impl InlineHistoryMenuView {
             if !suggestions_mode_model.as_ref(ctx).is_inline_history_menu() {
                 return;
             }
-            // Only tab switches stash a pending selection to restore after the
-            // query reruns. For all other result updates, keep the inline menu's
-            // default selection behavior.
+            // Tab switches and deletions of a different row stash a pending
+            // selection to restore after the query reruns. Other result updates
+            // keep the inline menu's default selection behavior.
             let Some(selection) = me.pending_tab_switch_selection.take() else {
                 return;
             };
@@ -526,6 +529,58 @@ impl InlineHistoryMenuView {
         });
     }
 
+    fn delete_history_item(
+        &mut self,
+        text: &str,
+        kind: DeletableHistoryKind,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if let Some(selected) = self.model.as_ref(ctx).selected_item() {
+            let deleting_selected = match (kind, selected) {
+                (DeletableHistoryKind::Command, AcceptHistoryItem::Command { command, .. }) => {
+                    command == text
+                }
+                (DeletableHistoryKind::AIPrompt, AcceptHistoryItem::AIPrompt { query_text }) => {
+                    query_text == text
+                }
+                (
+                    DeletableHistoryKind::Conversation,
+                    AcceptHistoryItem::Conversation {
+                        conversation_id, ..
+                    },
+                ) => conversation_id.to_string() == text,
+                (
+                    DeletableHistoryKind::Command,
+                    AcceptHistoryItem::AIPrompt { .. } | AcceptHistoryItem::Conversation { .. },
+                )
+                | (
+                    DeletableHistoryKind::AIPrompt,
+                    AcceptHistoryItem::Command { .. } | AcceptHistoryItem::Conversation { .. },
+                )
+                | (
+                    DeletableHistoryKind::Conversation,
+                    AcceptHistoryItem::Command { .. } | AcceptHistoryItem::AIPrompt { .. },
+                ) => false,
+            };
+            if !deleting_selected {
+                self.pending_tab_switch_selection = Some(HistoryItemIdentity::from_item(selected));
+            }
+        }
+
+        let suggestion_type = match kind {
+            DeletableHistoryKind::Command => SuggestionType::ShellCommand,
+            DeletableHistoryKind::AIPrompt => SuggestionType::AIQuery,
+            DeletableHistoryKind::Conversation => SuggestionType::Conversation,
+        };
+        IgnoredSuggestionsModel::handle(ctx).update(ctx, |model, ctx| {
+            model.add_ignored_suggestion(text.to_string(), suggestion_type, ctx);
+        });
+        self.rerun_query(ctx);
+        if self.mixer.as_ref(ctx).are_results_empty() {
+            ctx.emit(InlineHistoryMenuEvent::Close);
+        }
+    }
+
     fn current_query_text(&self, ctx: &ViewContext<Self>) -> String {
         // Read the query text from the mixer rather than the editor buffer. While the
         // inline history menu is open, moving the highlighted row can preview that
@@ -551,4 +606,12 @@ impl View for InlineHistoryMenuView {
 
 impl Entity for InlineHistoryMenuView {
     type Event = InlineHistoryMenuEvent;
+}
+
+impl TypedActionView for InlineHistoryMenuView {
+    type Action = DeleteInlineHistoryItem;
+
+    fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
+        self.delete_history_item(&action.text, action.kind, ctx);
+    }
 }

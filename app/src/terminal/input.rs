@@ -3396,7 +3396,7 @@ impl Input {
             )
         });
 
-        let inline_history_menu_view = ctx.add_view({
+        let inline_history_menu_view = ctx.add_typed_action_view({
             let active_session = active_session.clone();
             let buffer_model = buffer_model.clone();
             |ctx| {
@@ -3422,7 +3422,7 @@ impl Input {
         let inline_history_model = inline_history_menu_view.as_ref(ctx).model().clone();
 
         let cloud_mode_v2_history_menu_view = if FeatureFlag::CloudModeInputV2.is_enabled() {
-            let view = ctx.add_view({
+            let view = ctx.add_typed_action_view({
                 let active_session = active_session.clone();
                 let buffer_model = buffer_model.clone();
                 let agent_view_controller = agent_view_controller.clone();

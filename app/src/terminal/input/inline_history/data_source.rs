@@ -6,6 +6,8 @@
 //! - Commands are deduplicated, keeping the most recent occurrence
 //! - The result is that current session items appear at the bottom (closer to input)
 
+use std::collections::HashSet;
+
 use ai_terminal_ui::{AppContext, Entity, EntityId, ModelHandle, SingletonEntity};
 use chrono::{DateTime, Local};
 use fuzzy_match::FuzzyMatchResult;
@@ -18,6 +20,7 @@ use crate::input_suggestions::{HistoryInputSuggestion, HistoryOrder};
 use crate::search::SyncDataSource;
 use crate::search::data_source::{Query, QueryFilter, QueryResult};
 use crate::search::mixer::DataSourceRunErrorWrapper;
+use crate::suggestions::ignored_suggestions_model::{IgnoredSuggestionsModel, SuggestionType};
 use crate::terminal::history::{History, LinkedWorkflowData, UpArrowHistoryConfig};
 use crate::terminal::input::inline_history::search_item::InlineHistoryItem;
 use crate::terminal::input::inline_menu::{
@@ -145,10 +148,20 @@ impl InlineHistoryMenuDataSource {
 
     fn build_conversation_entries(&self, trimmed_query: &str, app: &AppContext) -> Vec<MenuEntry> {
         let mut conversation_entries: Vec<MenuEntry> = Vec::new();
+        let ignored_conversations = if app.has_singleton_model::<IgnoredSuggestionsModel>() {
+            IgnoredSuggestionsModel::handle(app)
+                .as_ref(app)
+                .get_ignored_suggestions_for_type(SuggestionType::Conversation)
+        } else {
+            HashSet::new()
+        };
         let history_model = BlocklistAIHistoryModel::handle(app).as_ref(app);
         for conversation in
             history_model.all_live_conversations_for_terminal_surface(self.terminal_view_id)
         {
+            if ignored_conversations.contains(&conversation.id().to_string()) {
+                continue;
+            }
             if conversation.is_entirely_passive() || conversation.exchange_count() == 0 {
                 continue;
             }

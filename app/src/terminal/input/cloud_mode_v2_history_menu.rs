@@ -6,18 +6,20 @@ use ai_terminal_ui::elements::{
     Border, ChildView, ConstrainedBox, Container, CornerRadius, DropShadow, Radius,
 };
 use ai_terminal_ui::{
-    AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, View, ViewContext,
-    ViewHandle,
+    AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle,
 };
 use pathfinder_color::ColorU;
 
 use crate::ai::blocklist::agent_view::AgentViewController;
 use crate::search::data_source::{Query, QueryFilter};
 use crate::search::mixer::SearchMixer;
+use crate::suggestions::ignored_suggestions_model::{IgnoredSuggestionsModel, SuggestionType};
 use crate::terminal::input::InputSuggestionsMode;
 use crate::terminal::input::buffer_model::{InputBufferModel, InputBufferUpdateEvent};
 use crate::terminal::input::inline_history::{
-    AcceptHistoryItem, InlineHistoryMenuDataSource, InlineHistoryMenuEvent,
+    AcceptHistoryItem, DeletableHistoryKind, DeleteInlineHistoryItem, InlineHistoryMenuDataSource,
+    InlineHistoryMenuEvent,
 };
 use crate::terminal::input::inline_menu::{InlineMenuEvent, InlineMenuPositioner, InlineMenuView};
 use crate::terminal::input::suggestions_mode_model::{
@@ -201,6 +203,38 @@ impl CloudModeV2HistoryMenuView {
         }
     }
 
+    fn delete_history_item(
+        &self,
+        text: &str,
+        kind: DeletableHistoryKind,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let suggestion_type = match kind {
+            DeletableHistoryKind::Command => SuggestionType::ShellCommand,
+            DeletableHistoryKind::AIPrompt => SuggestionType::AIQuery,
+            DeletableHistoryKind::Conversation => SuggestionType::Conversation,
+        };
+        IgnoredSuggestionsModel::handle(ctx).update(ctx, |model, ctx| {
+            model.add_ignored_suggestion(text.to_string(), suggestion_type, ctx);
+        });
+        self.rerun_current_query(ctx);
+        if self.mixer.as_ref(ctx).are_results_empty() {
+            ctx.emit(InlineHistoryMenuEvent::Close);
+        }
+    }
+
+    fn rerun_current_query(&self, ctx: &mut ViewContext<Self>) {
+        let query = self
+            .mixer
+            .as_ref(ctx)
+            .current_query()
+            .cloned()
+            .unwrap_or_else(|| prompts_query(""));
+        self.mixer.update(ctx, |mixer, ctx| {
+            mixer.run_query(query, ctx);
+        });
+    }
+
     fn open_with_current_buffer(&mut self, ctx: &mut ViewContext<Self>) {
         let text = self.buffer_model.as_ref(ctx).current_value().to_owned();
         self.mixer.update(ctx, |mixer, ctx| {
@@ -218,6 +252,14 @@ fn prompts_query(text: &str) -> Query {
 
 impl Entity for CloudModeV2HistoryMenuView {
     type Event = InlineHistoryMenuEvent;
+}
+
+impl TypedActionView for CloudModeV2HistoryMenuView {
+    type Action = DeleteInlineHistoryItem;
+
+    fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
+        self.delete_history_item(&action.text, action.kind, ctx);
+    }
 }
 
 impl View for CloudModeV2HistoryMenuView {

@@ -11,6 +11,7 @@ use crate::persistence::ModelEvent;
 pub enum SuggestionType {
     ShellCommand,
     AIQuery,
+    Conversation,
 }
 
 impl SuggestionType {
@@ -18,6 +19,7 @@ impl SuggestionType {
         match self {
             SuggestionType::ShellCommand => "shell_command",
             SuggestionType::AIQuery => "ai_query",
+            SuggestionType::Conversation => "conversation",
         }
     }
 
@@ -25,6 +27,7 @@ impl SuggestionType {
         match s {
             "shell_command" => Some(SuggestionType::ShellCommand),
             "ai_query" => Some(SuggestionType::AIQuery),
+            "conversation" => Some(SuggestionType::Conversation),
             _ => None,
         }
     }
