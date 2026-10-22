@@ -173,6 +173,13 @@ if [[ "$ARTIFACT" == "app" && "$BUILD" == "true" \
   REMOTE_SERVER_ARCHES="$BUILD_ARCH"
 fi
 
+# OSS clients install the embedded SSH extension at a path named after the build id, so the
+# extension builds below inherit the id the app is compiled with.
+if [[ "$RELEASE_CHANNEL" == "oss" && -z "${AI_TERMINAL_BUILD_ID:-}" ]]; then
+  AI_TERMINAL_BUILD_ID="$("$WORKSPACE_ROOT_DIR/script/build_id")"
+  export AI_TERMINAL_BUILD_ID
+fi
+
 # Remote-server tarballs package the static CLI build, which app bundles can then embed.
 if [[ ${PACKAGES[@]} =~ "remote_server_tarball" && "$ARTIFACT" != "cli" ]]; then
   echo "Error: The remote_server_tarball package requires --artifact cli." >&2

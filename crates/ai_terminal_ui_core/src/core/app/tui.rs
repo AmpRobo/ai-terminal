@@ -33,7 +33,7 @@ impl AppContext {
     #[cfg(not(debug_assertions))]
     pub fn register_tui_binding_validator<V: crate::TuiView>(
         &mut self,
-        binding_validator: impl Fn(BindingLens) -> IsBindingValid + 'static,
+        _binding_validator: impl Fn(BindingLens) -> IsBindingValid + 'static,
     ) {
     }
 

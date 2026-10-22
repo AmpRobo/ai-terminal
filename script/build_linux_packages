@@ -5,7 +5,8 @@
 # Both packages are built from the same compiled inputs:
 # - the GUI binary for the selected channel
 # - the SSH extension, a static musl CLI compiled from this checkout for the
-#   same architecture and packed as resources/remote-server/linux-<arch>/oz.tar.gz
+#   same architecture (plus any --remote-server-arches) and packed as
+#   resources/remote-server/linux-<arch>/oz.tar.gz
 #
 # Defaults to the oss channel, which does not need the private
 # ai-terminal-channel-config binary. See how_to_build.md.
@@ -22,6 +23,7 @@ INSTALL_SYSTEM_DEPS=false
 DEBUG=false
 SKIP_BUILD=false
 BUILD_ARCH=""
+REMOTE_SERVER_ARCHES=""
 EXTRA=()
 
 usage() {
@@ -38,6 +40,10 @@ Options:
   --skip-build          Package an existing binary
   --arch ARCH           x86_64 or aarch64. Must match this machine. The GUI binary
                         and the SSH extension are both compiled for it.
+  --remote-server-arches LIST
+                        Comma-separated x86_64 and/or aarch64 SSH extensions to
+                        package (default: --arch). Include the architecture of
+                        every remote host you SSH into.
   --features FEATURES   Extra Cargo features, appended to the channel set
   --install-system-deps Install apt build and packaging packages (uses sudo)
   -h, --help            Show this help
@@ -82,6 +88,10 @@ while (($#)); do
       ;;
     --arch)
       BUILD_ARCH="$2"
+      shift 2
+      ;;
+    --remote-server-arches)
+      REMOTE_SERVER_ARCHES="$2"
       shift 2
       ;;
     *)
@@ -135,6 +145,9 @@ esac
 if [[ "$BUILD_ARCH" != "$HOST_ARCH" ]]; then
   echo "The GUI package must be compiled on the target architecture (host $HOST_ARCH, requested $BUILD_ARCH)." >&2
   exit 1
+fi
+if [[ -z "$REMOTE_SERVER_ARCHES" ]]; then
+  REMOTE_SERVER_ARCHES="$BUILD_ARCH"
 fi
 
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
@@ -198,13 +211,14 @@ if [[ "$SKIP_BUILD" == true && -z "${SETTINGS_SCHEMA_SOURCE:-}" && -z "${SETTING
   fi
 fi
 
-# One GUI compile and one SSH-extension compile, then both package formats
-# install those artifacts. --remote-server-arches builds the static CLI from
-# this checkout; script/linux/bundle copies it into the AppImage and the deb.
+# One GUI compile and one SSH-extension compile per architecture, then both
+# package formats install those artifacts. --remote-server-arches builds the
+# static CLI from this checkout; script/linux/bundle copies it into the
+# AppImage and the deb.
 "$ROOT/script/bundle" \
   --channel "$CHANNEL" \
   --packages "$PACKAGES" \
   --release-tag "$RELEASE_TAG" \
   --arch "$BUILD_ARCH" \
-  --remote-server-arches "$BUILD_ARCH" \
+  --remote-server-arches "$REMOTE_SERVER_ARCHES" \
   "${EXTRA[@]}"

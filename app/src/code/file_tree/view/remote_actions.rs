@@ -8,7 +8,9 @@ use ai_terminal_ui::{AppContext, SingletonEntity as _, ViewContext};
 use ai_terminal_util::remote_path::RemotePath;
 use ai_terminal_util::standardized_path::StandardizedPath;
 #[cfg(feature = "local_fs")]
-use remote_server::manager::RemoteServerManager;
+use remote_server::manager::{HostRequestError, RemoteServerManager};
+#[cfg(feature = "local_fs")]
+use remote_server::proto::ErrorCode;
 
 use super::{FileTreeEvent, FileTreeIdentifier, FileTreeView};
 use crate::code::buffer_location::LocalOrRemotePath;
@@ -18,6 +20,10 @@ use crate::util::file::external_editor::EditorSettings;
 use crate::util::openable_file_type::{
     EditorLayout, FileTarget, is_jupyter_notebook_file, is_markdown_file,
 };
+#[cfg(feature = "local_fs")]
+use crate::view_components::DismissibleToast;
+#[cfg(feature = "local_fs")]
+use crate::workspace::ToastStack;
 
 /// Viewer used when a remote file is opened from the project explorer.
 pub(super) fn remote_file_target(
@@ -117,6 +123,7 @@ impl FileTreeView {
                         safe: ("Remote rename failed"),
                         full: ("Remote rename failed: {err}")
                     );
+                    show_remote_mutation_error(remote_mutation_error_message("rename", &err), ctx);
                 }
             },
         );
@@ -165,6 +172,7 @@ impl FileTreeView {
                         safe: ("Remote delete failed"),
                         full: ("Remote delete failed: {err}")
                     );
+                    show_remote_mutation_error(remote_mutation_error_message("delete", &err), ctx);
                 }
             },
         );
@@ -205,3 +213,37 @@ fn retarget_expanded_folders(
 fn is_safe_file_name(name: &str) -> bool {
     !name.is_empty() && !name.contains('/') && !name.contains('\\') && name != "." && name != ".."
 }
+
+#[cfg(feature = "local_fs")]
+fn show_remote_mutation_error(message: String, ctx: &mut ViewContext<FileTreeView>) {
+    let window_id = ctx.window_id();
+    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+        let toast = DismissibleToast::error(message)
+            .with_object_id("remote_file_tree_mutation_failed".to_string());
+        toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+    });
+}
+
+/// Describes a failed remote rename or delete, where `action` completes "Failed to ...".
+#[cfg(feature = "local_fs")]
+fn remote_mutation_error_message(action: &str, err: &HostRequestError) -> String {
+    match err {
+        // Remote servers that predate the request can't decode it, so they reject it as malformed.
+        HostRequestError::ServerError {
+            code: ErrorCode::InvalidRequest,
+            ..
+        } => format!("Failed to {action}: the SSH extension on this host is out of date."),
+        HostRequestError::OperationFailed(message) => format!("Failed to {action}: {message}"),
+        HostRequestError::AllSessionsDisconnected => {
+            format!("Failed to {action} — remote session disconnected.")
+        }
+        HostRequestError::Timeout
+        | HostRequestError::ServerError { .. }
+        | HostRequestError::UnexpectedResponse
+        | HostRequestError::Aborted => format!("Failed to {action}."),
+    }
+}
+
+#[cfg(all(test, feature = "local_fs"))]
+#[path = "remote_actions_tests.rs"]
+mod tests;

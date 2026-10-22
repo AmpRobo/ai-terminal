@@ -90,10 +90,56 @@ impl SshTransport {
     }
 
     fn remote_proxy_command(&self) -> String {
-        let binary = remote_server::setup::remote_server_binary();
         let identity_key = self.auth_context.remote_server_identity_key();
         let quoted_identity_key = shell_words::quote(&identity_key);
-        format!("{binary} remote-server-proxy --identity-key {quoted_identity_key}")
+        command_with_fallback_binary(
+            &remote_server::setup::remote_server_binary(),
+            remote_server::setup::fallback_remote_server_binary().as_deref(),
+            &format!("remote-server-proxy --identity-key {quoted_identity_key}"),
+        )
+    }
+}
+
+/// Returns a remote command that runs `binary` with `args`, or `fallback` when `binary` isn't
+/// installed.
+///
+/// The remote login shell parses this command, so it uses `&&`/`||`, which fish accepts, rather
+/// than `if ...; then`, which it doesn't.
+fn command_with_fallback_binary(binary: &str, fallback: Option<&str>, args: &str) -> String {
+    match fallback {
+        Some(fallback) => {
+            format!("test -x {binary} && exec {binary} {args} || exec {fallback} {args}")
+        }
+        None => format!("{binary} {args}"),
+    }
+}
+
+/// Runs a `<binary> --version` check command on the remote host.
+async fn run_binary_check(socket_path: &Path, cmd: &str) -> Result<bool, Error> {
+    log::info!("Running binary check: {cmd}");
+    let output =
+        remote_server::ssh::run_ssh_command(socket_path, cmd, remote_server::setup::CHECK_TIMEOUT)
+            .await?;
+    // `<binary> --version` exits 0 when present, executable, and
+    // functional. Exit 127 means the binary was not found, and 126
+    // means it exists but is not executable. Any other non-zero
+    // exit (e.g. SSH exit 255 for a dead connection, or signal
+    // termination) is treated as a transport-level failure.
+    let code = output.status.code();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    log::info!("Binary check result: exit={code:?} stdout={stdout}");
+    match code {
+        Some(0) => Ok(true),
+        Some(126) | Some(127) => Ok(false),
+        Some(code) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(Error::Other(anyhow::anyhow!(
+                "binary check exited with code {code}: {stderr}"
+            )))
+        }
+        None => Err(Error::Other(anyhow::anyhow!(
+            "binary check terminated by signal"
+        ))),
     }
 }
 
@@ -155,35 +201,25 @@ impl RemoteTransport for SshTransport {
     fn check_binary(&self) -> Pin<Box<dyn Future<Output = Result<bool, Error>> + Send>> {
         let socket_path = self.socket_path.clone();
         Box::pin(async move {
-            let cmd = remote_server::setup::binary_check_command();
-            log::info!("Running binary check: {cmd}");
-            let output = remote_server::ssh::run_ssh_command(
-                &socket_path,
-                &cmd,
-                remote_server::setup::CHECK_TIMEOUT,
-            )
-            .await?;
-            // `<binary> --version` exits 0 when present, executable, and
-            // functional. Exit 127 means the binary was not found, and 126
-            // means it exists but is not executable. Any other non-zero
-            // exit (e.g. SSH exit 255 for a dead connection, or signal
-            // termination) is treated as a transport-level failure.
-            let code = output.status.code();
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            log::info!("Binary check result: exit={code:?} stdout={stdout}");
-            match code {
-                Some(0) => Ok(true),
-                Some(126) | Some(127) => Ok(false),
-                Some(code) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    Err(Error::Other(anyhow::anyhow!(
-                        "binary check exited with code {code}: {stderr}"
-                    )))
-                }
-                None => Err(Error::Other(anyhow::anyhow!(
-                    "binary check terminated by signal"
-                ))),
+            let binary_check = remote_server::setup::binary_check_command();
+            if run_binary_check(&socket_path, &binary_check).await? {
+                return Ok(true);
             }
+            let Some(fallback_check) = remote_server::setup::fallback_binary_check_command() else {
+                return Ok(false);
+            };
+            // Reporting the binary as missing triggers an install, which only produces this
+            // build's binary when the client packages a remote server for the host's platform.
+            let platform = detect_remote_platform(&socket_path).await?;
+            if installation::bundles_remote_server_for(&platform).await {
+                return Ok(false);
+            }
+            log::info!(
+                "No remote server packaged for {}-{}; checking for the fallback binary",
+                platform.os.as_str(),
+                platform.arch.as_str()
+            );
+            run_binary_check(&socket_path, &fallback_check).await
         })
     }
 

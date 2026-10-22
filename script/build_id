@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+#
+# Prints a short fingerprint of this checkout's sources: the commit plus uncommitted changes,
+# including untracked files that aren't ignored. Prints nothing outside a git checkout.
+#
+# OSS builds all share one release tag, so the packaging scripts compile this into the client and
+# the SSH extension it bundles (as AI_TERMINAL_BUILD_ID). The client then replaces an extension
+# that a build from other sources installed on a remote host.
+
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+if ! head="$(git rev-parse --verify --quiet HEAD 2>/dev/null)"; then
+  exit 0
+fi
+
+untracked=()
+while IFS= read -r -d '' file; do
+  untracked+=("$file")
+done < <(git ls-files --others --exclude-standard -z)
+
+{
+  echo "$head"
+  git diff --no-ext-diff --no-textconv --no-color --binary HEAD
+  if ((${#untracked[@]})); then
+    printf '%s\n' "${untracked[@]}"
+    git hash-object -- "${untracked[@]}"
+  fi
+} | git hash-object --stdin | cut -c1-12

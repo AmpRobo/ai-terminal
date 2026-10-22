@@ -1334,10 +1334,10 @@ impl View for LeftPanelView {
 
         let mouse_state_handles = vec![
             self.mouse_state_handles.project_explorer_button.clone(),
+            self.mouse_state_handles.global_search_button.clone(),
             self.mouse_state_handles
                 .conversation_list_view_button
                 .clone(),
-            self.mouse_state_handles.global_search_button.clone(),
             self.mouse_state_handles.ai_terminal_drive_button.clone(),
         ];
 

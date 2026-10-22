@@ -22,7 +22,7 @@ target/release-lto/bundle/linux/ai-terminal_<version>_<deb-arch>.deb
 ```text
 ./script/build_linux_packages [--channel CHANNEL] [--packages LIST]
     [--release-tag TAG] [--debug] [--skip-build] [--arch ARCH]
-    [--features FEATURES] [--install-system-deps]
+    [--remote-server-arches LIST] [--features FEATURES] [--install-system-deps]
 ```
 
 | 参数 | 作用 |
@@ -33,6 +33,7 @@ target/release-lto/bundle/linux/ai-terminal_<version>_<deb-arch>.deb
 | `--debug` | 使用 Cargo `dev` 配置，编译更快，二进制更大 |
 | `--skip-build` | 跳过 `cargo build`，只用已有二进制重新打包 |
 | `--arch` | `x86_64` 或 `aarch64`。必须与本机一致。GUI 二进制和 SSH extension 都按这个架构编译 |
+| `--remote-server-arches` | 逗号分隔的 `x86_64`、`aarch64`，默认与 `--arch` 相同。决定包里带哪些架构的 SSH extension。要 SSH 到其他架构的主机时把它加上，例如 `x86_64,aarch64`。在 x86_64 上第一次编 `aarch64` 会自动下载 musl 交叉工具链 |
 | `--features` | 追加到该渠道原有 Cargo features 之后 |
 | `--install-system-deps` | 调用仓库里的 apt 安装脚本，并补装打包工具。需要 sudo |
 
@@ -56,7 +57,9 @@ target/release-lto/bundle/linux/ai-terminal_<version>_<deb-arch>.deb
    `dev` / `preview` / `stable` 还会带上 `crash_reporting` 等渠道 feature。首次 `release-lto` 构建通常要几十分钟。
 3. 复制一份未 strip 的 `.debug` 二进制，再对要打包的二进制 `strip`。`dev` 只去掉调试符号，其余渠道去掉全部符号。
 4. 运行编出的二进制 `dump-settings-schema`，生成 `settings_schema.json`。`--skip-build` 时必须能找到这份文件，或自行设置 `SETTINGS_SCHEMA_SOURCE` / `SETTINGS_SCHEMA_EXECUTABLE`。
-5. 编译 SSH extension。这是同一仓库里的静态 musl CLI，架构与 GUI 相同。`oss` 在 `x86_64` 上等价于再跑一次 `script/linux/bundle --artifact cli --channel oss --packages remote_server_tarball --arch x86_64`。产物是 `resources/remote-server/linux-<arch>/oz.tar.gz`，AppImage 和 deb 都会装进安装目录。第一次 SSH 用这个包，不再从网络下载。
+5. 编译 SSH extension。这是同一仓库里的静态 musl CLI，默认架构与 GUI 相同，`--remote-server-arches` 可以多编几个架构。`oss` 在 `x86_64` 上等价于再跑一次 `script/linux/bundle --artifact cli --channel oss --packages remote_server_tarball --arch x86_64`。产物是 `resources/remote-server/linux-<arch>/oz.tar.gz`，AppImage 和 deb 都会装进安装目录。第一次 SSH 用这个包，不再从网络下载。
+
+   `oss` 的包都用同一个 release tag，所以 `script/linux/bundle` 会先用 `script/build_id` 算出源码指纹（当前 commit 加未提交的改动），以 `AI_TERMINAL_BUILD_ID` 编进 GUI 和 SSH extension。远程主机上的 extension 装在 `~/.ai-terminal/remote-server/ai-terminal-oss-<build id>`，换了源码重新打包后，客户端连接时会自动换上新的 extension，并且只保留上一个版本。包里没有远程主机对应架构的 extension 时，客户端继续用主机上已有的旧版 `ai-terminal-oss`，旧版不支持的操作（例如在 project explorer 里重命名、删除）会提示 extension 过旧。
 6. 按 `--packages` 封装。两种格式都会先把二进制、`.desktop`、图标、`resources/` 和 SSH extension 装进一个临时目录（`script/linux/bundle_install`）。`cargo about generate` 在这一步生成 `THIRD_PARTY_LICENSES.txt`，因此需要 `cargo-about` 0.8.4。
 
 ### AppImage
@@ -93,7 +96,7 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
   --arch "$(uname -m)" --remote-server-arches "$(uname -m)"
 ```
 
-只打一种包时把 `--packages` 改成 `appimage` 或 `deb`。`--remote-server-arches` 必须保留，否则包里没有 SSH extension。已有同 profile 的 GUI 和 musl CLI 时可以加 `--skip-build`，并保证对应的 `settings_schema.json` 还在，例如 `target/release-lto/settings_schema.json`。
+只打一种包时把 `--packages` 改成 `appimage` 或 `deb`。`--remote-server-arches` 必须保留，否则包里没有 SSH extension；要支持其他架构的远程主机时写成 `x86_64,aarch64`。已有同 profile 的 GUI 和 musl CLI 时可以加 `--skip-build`，并保证对应的 `settings_schema.json` 还在，例如 `target/release-lto/settings_schema.json`。
 
 ## 安装依赖
 

@@ -149,14 +149,18 @@ async fn bundled_tarball(bundled_dir: &Path, platform: &RemotePlatform) -> Optio
     is_valid_tarball(&path).await.then_some(path)
 }
 
+/// Returns the tarball bundled with this client for the remote platform, if there is one.
+pub(super) async fn bundled_tarball_for(platform: &RemotePlatform) -> Option<PathBuf> {
+    let bundled_dir = bundled_tarballs_dir().await?;
+    bundled_tarball(&bundled_dir, platform).await
+}
+
 /// Returns a local tarball for the remote platform.
 ///
 /// Prefers a tarball bundled with this client, then an existing cached tarball; otherwise
 /// downloads the tarball into the cache and returns the newly cached path.
 async fn local_remote_server_tarball(platform: &RemotePlatform) -> anyhow::Result<PathBuf> {
-    if let Some(bundled_dir) = bundled_tarballs_dir().await
-        && let Some(bundled_path) = bundled_tarball(&bundled_dir, platform).await
-    {
+    if let Some(bundled_path) = bundled_tarball_for(platform).await {
         log::info!(
             "Using bundled remote-server tarball at {}",
             bundled_path.display()

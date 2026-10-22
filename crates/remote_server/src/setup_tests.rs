@@ -2,6 +2,8 @@
 use std::fs;
 #[cfg(unix)]
 use std::process::Stdio;
+#[cfg(unix)]
+use std::time::SystemTime;
 
 #[cfg(unix)]
 use command::blocking::Command;
@@ -600,6 +602,109 @@ fn version_hash_is_deterministic() {
     // Hash is exactly 8 hex chars.
     assert_eq!(hash(version).len(), 8);
     assert!(hash(version).chars().all(|c| c.is_ascii_hexdigit()));
+}
+
+#[test]
+fn version_hash_without_build_id_hashes_the_release_tag_alone() {
+    // Release channels never have a build id, so their daemon socket names must stay the same.
+    use std::hash::{Hash, Hasher};
+
+    let release_tag = "v0.2026.05.13.09.15.stable_01";
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    release_tag.hash(&mut hasher);
+    let expected = format!("{:016x}", hasher.finish())[..8].to_string();
+
+    assert_eq!(version_hash_for(Some(release_tag), None), Some(expected));
+}
+
+#[test]
+fn version_hash_distinguishes_oss_builds_sharing_a_release_tag() {
+    let tag_only = version_hash_for(Some("v0.1.0"), None);
+    let build_a = version_hash_for(Some("v0.1.0"), Some("0123456789ab"));
+    let build_b = version_hash_for(Some("v0.1.0"), Some("ba9876543210"));
+
+    assert_ne!(build_a, tag_only);
+    assert_ne!(build_a, build_b);
+    assert!(version_hash_for(None, Some("0123456789ab")).is_some());
+    assert_eq!(version_hash_for(None, None), None);
+}
+
+#[cfg(unix)]
+fn run_superseded_binaries_cleanup(build_id: &str, fake_home: &std::path::Path) {
+    let output = Command::new("bash")
+        .arg("-c")
+        .arg(superseded_binaries_cleanup_script_for(build_id))
+        .env("HOME", fake_home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to run cleanup script");
+    assert!(
+        output.status.success(),
+        "cleanup failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn superseded_binaries_cleanup_keeps_current_and_most_recently_installed_other_build() {
+    let fake_home = std::env::temp_dir().join(format!(
+        "remote-server-superseded-cleanup-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let install_dir =
+        std::path::PathBuf::from(remote_server_dir().replacen('~', fake_home.to_str().unwrap(), 1));
+    fs::create_dir_all(install_dir.join(BUNDLED_RESOURCES_DIR_NAME)).unwrap();
+    let name = binary_name();
+    let write_binary = |file_name: &str, age_secs: u64| {
+        let path = install_dir.join(file_name);
+        fs::write(&path, "").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(age_secs))
+            .unwrap();
+    };
+    write_binary(name, 400);
+    write_binary(&format!("{name}-oldest"), 300);
+    write_binary(&format!("{name}-previous"), 200);
+    // Extracted binaries keep the archive's modification time, which can predate the others.
+    write_binary(&format!("{name}-current"), 500);
+
+    run_superseded_binaries_cleanup("current", &fake_home);
+
+    let mut remaining: Vec<String> = fs::read_dir(&install_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    remaining.sort();
+    let mut expected = vec![
+        BUNDLED_RESOURCES_DIR_NAME.to_string(),
+        format!("{name}-current"),
+        format!("{name}-previous"),
+    ];
+    expected.sort();
+    assert_eq!(remaining, expected);
+
+    // The next build's install keeps this one as the most recently installed other build.
+    write_binary(&format!("{name}-next"), 600);
+    run_superseded_binaries_cleanup("next", &fake_home);
+    assert!(install_dir.join(format!("{name}-current")).exists());
+    assert!(!install_dir.join(format!("{name}-previous")).exists());
+
+    fs::remove_dir_all(fake_home).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn superseded_binaries_cleanup_tolerates_missing_install_dir() {
+    let fake_home = std::env::temp_dir().join(format!(
+        "remote-server-superseded-cleanup-missing-{}",
+        uuid::Uuid::new_v4()
+    ));
+    run_superseded_binaries_cleanup("current", &fake_home);
 }
 
 #[test]

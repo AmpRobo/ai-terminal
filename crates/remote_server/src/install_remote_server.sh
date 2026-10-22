@@ -17,7 +17,7 @@
 #   {install_dir}               — e.g. ~/.ai-terminal/remote-server
 #   {binary_name}               — e.g. oz | oz-dev | oz-preview
 #   {version_query}             — e.g. &version=v0.2026... (empty when no release tag)
-#   {version_suffix}            — e.g. -v0.2026...        (empty when no release tag)
+#   {version_suffix}            — e.g. -v0.2026... or -{OSS build id} (empty without either)
 #   {bundled_resources_dir_name} — global resources directory name (e.g. bundled_resources)
 #   {no_http_client_exit_code}  — exit code when neither curl nor wget is available
 #   {staging_tarball_path}      — path to a pre-uploaded tarball (SCP fallback; empty normally)

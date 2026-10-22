@@ -4,8 +4,15 @@ mod scp_fallback;
 use std::path::Path;
 
 use anyhow::Result;
+use remote_server::setup::RemotePlatform;
 use remote_server::ssh::SshCommandError;
 use remote_server::transport::{Error, InstallOutcome, InstallSource};
+
+/// Returns whether this client packages a remote server for `platform`, which [`install_binary`]
+/// installs in preference to any other source.
+pub(super) async fn bundles_remote_server_for(platform: &RemotePlatform) -> bool {
+    scp_fallback::bundled_tarball_for(platform).await.is_some()
+}
 
 /// Runs the binary install sequence for the SSH transport.
 ///
@@ -89,7 +96,35 @@ pub(super) async fn install_binary(socket_path: &Path) -> InstallOutcome {
         }
     }
 
+    if outcome.result.is_ok()
+        && let Some(script) = remote_server::setup::superseded_binaries_cleanup_script()
+    {
+        remove_superseded_binaries(socket_path, &script).await;
+    }
+
     outcome
+}
+
+/// Best-effort: a failure only leaves superseded binaries on the remote host's disk.
+async fn remove_superseded_binaries(socket_path: &Path, script: &str) {
+    match remote_server::ssh::run_ssh_script(
+        socket_path,
+        script,
+        remote_server::setup::CHECK_TIMEOUT,
+    )
+    .await
+    {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log::warn!(
+                "Removing superseded remote server binaries exited with {:?}: {}",
+                output.status.code(),
+                stderr.trim()
+            );
+        }
+        Err(err) => log::warn!("Failed to remove superseded remote server binaries: {err}"),
+    }
 }
 
 /// Runs the install script on the remote host to download and install the

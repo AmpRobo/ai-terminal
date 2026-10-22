@@ -171,6 +171,12 @@ if [[ "$OS_TYPE" = "Darwin" ]]; then
   fi
 elif [[ "$OS_TYPE" = "Linux" ]] || [[ "$OS_TYPE" =~ ^(MINGW64_NT|MSYS_NT) ]]; then
   if [[ "$OS_TYPE" = "Linux" && "${AI_TERMINAL_SKIP_REMOTE_SERVER_BUNDLE:-}" != "1" ]]; then
+    # OSS clients install the staged SSH extension at a path named after the build id, so the
+    # extension and the client must be compiled with the same one.
+    if [[ "$AI_TERMINAL_CHANNEL" = "oss" && -z "${AI_TERMINAL_BUILD_ID:-}" ]]; then
+      AI_TERMINAL_BUILD_ID="$(./script/build_id)"
+      export AI_TERMINAL_BUILD_ID
+    fi
     ./script/linux/stage_bundled_remote_server "$AI_TERMINAL_CHANNEL" "$(cargo_output_dir)"
   fi
   echo "Running cargo run --bin $AI_TERMINAL_BIN_NAME --features \"$FEATURES\" ${CARGO_PARAMS[*]}"

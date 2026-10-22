@@ -517,6 +517,7 @@ impl Scene {
         }
     }
 
+    #[cfg_attr(not(debug_assertions), allow(unused_variables))]
     fn validate_rect(rect: &RectF, location: Option<&'static std::panic::Location<'static>>) {
         #[cfg(debug_assertions)]
         let location_info = location

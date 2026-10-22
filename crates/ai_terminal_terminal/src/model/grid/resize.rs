@@ -1,6 +1,7 @@
 // The code in this file is adapted from the alacritty_terminal crate under the
 // Apache license; see: crates/ai_terminal_terminal/src/model/LICENSE-ALACRITTY.
 
+#[cfg(debug_assertions)]
 use ai_terminal_errors::report_error;
 use string_offset::ByteOffset;
 

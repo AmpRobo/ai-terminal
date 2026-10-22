@@ -415,7 +415,23 @@ pub fn remote_server_daemon_data_dir(identity_key: &str) -> String {
     )
 }
 
-/// Returns a short, deterministic 8-hex-char hash of the app version string.
+/// Identifies the sources an OSS build was compiled from (see `script/build_id`).
+///
+/// OSS builds all share one release tag, so this is what tells a remote server compiled from other
+/// sources apart from this client's. Other channels' release tags already identify the build.
+fn oss_build_id() -> Option<&'static str> {
+    match ChannelState::channel() {
+        Channel::Oss => option_env!("AI_TERMINAL_BUILD_ID").filter(|build_id| !build_id.is_empty()),
+        Channel::Local
+        | Channel::Stable
+        | Channel::Preview
+        | Channel::Dev
+        | Channel::Integration => None,
+    }
+}
+
+/// Returns a short, deterministic 8-hex-char hash of the app version string
+/// and, on OSS, the build id.
 ///
 /// Used to version-discriminate daemon socket and PID files without
 /// embedding the full version string in the filename, which would push
@@ -423,18 +439,26 @@ pub fn remote_server_daemon_data_dir(identity_key: &str) -> String {
 /// Linux, 103 on macOS) for users with moderately long identity keys or
 /// home directory paths.
 pub fn version_hash() -> Option<String> {
+    version_hash_for(ChannelState::app_version(), oss_build_id())
+}
+
+fn version_hash_for(release_tag: Option<&str>, build_id: Option<&str>) -> Option<String> {
     use std::hash::{Hash, Hasher};
 
-    let version = ChannelState::app_version()?;
+    let version = match (release_tag, build_id) {
+        (Some(release_tag), Some(build_id)) => format!("{release_tag}+{build_id}"),
+        (Some(version), None) | (None, Some(version)) => version.to_string(),
+        (None, None) => return None,
+    };
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     version.hash(&mut hasher);
     Some(format!("{:016x}", hasher.finish())[..8].to_string())
 }
 
 /// Returns the daemon socket filename, versioned with a short hash when
-/// a release tag is baked in.
+/// a release tag or OSS build id is baked in.
 ///
-/// - With `GIT_RELEASE_TAG`:    `server-{hash8}.sock`  (e.g. `server-a1b2c3d4.sock`)
+/// - With either:               `server-{hash8}.sock`  (e.g. `server-a1b2c3d4.sock`)
 /// - Without (plain cargo run): `server.sock`
 pub fn daemon_socket_name() -> String {
     match version_hash() {
@@ -444,9 +468,9 @@ pub fn daemon_socket_name() -> String {
 }
 
 /// Returns the daemon PID filename, versioned with a short hash when a
-/// release tag is baked in.
+/// release tag or OSS build id is baked in.
 ///
-/// - With `GIT_RELEASE_TAG`:    `server-{hash8}.pid`
+/// - With either:               `server-{hash8}.pid`
 /// - Without (plain cargo run): `server.pid`
 pub fn daemon_pid_name() -> String {
     match version_hash() {
@@ -467,11 +491,13 @@ pub fn binary_name() -> &'static str {
 ///
 /// The path-versioning rule is keyed strictly off [`Channel`]:
 ///
-/// - [`Channel::Local`] and [`Channel::Oss`] always use the bare
-///   `{binary_name}` path. For `Local` this is the slot
-///   `script/deploy_remote_server` writes to; `Oss` is treated the
-///   same way because it has no release-pinned CDN artifact and is
-///   expected to be deployed/managed locally.
+/// - [`Channel::Local`] always uses the bare `{binary_name}` path, the
+///   slot `script/deploy_remote_server` writes to.
+/// - [`Channel::Oss`] has no release-pinned CDN artifact and installs the
+///   remote server packaged with the client. Builds with a build id use
+///   `{binary_name}-{build_id}`, so rebuilding the client from other
+///   sources replaces the remote server too; builds without one use the
+///   bare path.
 /// - Every other channel always uses `{binary_name}-{version}`, where
 ///   `version` is the baked-in `GIT_RELEASE_TAG` when present and falls
 ///   back to `CARGO_PKG_VERSION` otherwise. The fallback keeps the path
@@ -480,14 +506,35 @@ pub fn binary_name() -> &'static str {
 ///   `/download/cli` and surface a clean `SetupFailed` rather than silently
 ///   writing to a path that doesn't follow the rule.
 pub fn remote_server_binary() -> String {
-    let dir = remote_server_dir();
-    let name = binary_name();
+    format!(
+        "{}/{}{}",
+        remote_server_dir(),
+        binary_name(),
+        binary_version_suffix()
+    )
+}
+
+/// Returns the suffix [`remote_server_binary`] appends to the binary name.
+fn binary_version_suffix() -> String {
     match ChannelState::channel() {
-        Channel::Local | Channel::Oss => format!("{dir}/{name}"),
+        Channel::Local => String::new(),
+        Channel::Oss => oss_build_id()
+            .map(|build_id| format!("-{build_id}"))
+            .unwrap_or_default(),
         Channel::Stable | Channel::Preview | Channel::Dev | Channel::Integration => {
-            format!("{dir}/{name}-{}", pinned_version())
+            format!("-{}", pinned_version())
         }
     }
+}
+
+/// Returns the bare-path binary that OSS builds without a build id install,
+/// when [`remote_server_binary`] is build-specific instead.
+///
+/// Installing the build-specific binary needs a remote server packaged for
+/// the host's platform. Hosts without one keep running this binary rather
+/// than losing the remote server.
+pub fn fallback_remote_server_binary() -> Option<String> {
+    oss_build_id().map(|_| format!("{}/{}", remote_server_dir(), binary_name()))
 }
 
 /// Returns the shell command to verify the remote server binary is
@@ -501,13 +548,53 @@ pub fn binary_check_command() -> String {
     format!("{} --version", remote_server_binary())
 }
 
-/// Returns the shell command to remove the current remote-server binary.
+/// Returns the [`binary_check_command`] equivalent for
+/// [`fallback_remote_server_binary`].
+pub fn fallback_binary_check_command() -> Option<String> {
+    fallback_remote_server_binary().map(|binary| format!("{binary} --version"))
+}
+
+/// Number of other OSS builds' binaries kept after an install, so a host
+/// shared by clients of different builds isn't reinstalled every time the
+/// user switches between them.
+const OTHER_OSS_BUILDS_TO_KEEP: usize = 1;
+
+/// Returns a bash script to run after a build-specific OSS binary is
+/// installed, or `None` when [`remote_server_binary`] isn't build-specific.
+///
+/// The script marks the binary as the most recently installed one and
+/// removes the binaries of other builds, including the bare-path one,
+/// except the [`OTHER_OSS_BUILDS_TO_KEEP`] most recently installed.
+pub fn superseded_binaries_cleanup_script() -> Option<String> {
+    oss_build_id().map(superseded_binaries_cleanup_script_for)
+}
+
+fn superseded_binaries_cleanup_script_for(build_id: &str) -> String {
+    let dir = remote_server_dir();
+    let name = binary_name();
+    let current = format!("{name}-{build_id}");
+    let first_removed = OTHER_OSS_BUILDS_TO_KEEP + 1;
+    format!(
+        "cd {dir} || exit 0\n\
+         touch -- '{current}'\n\
+         ls -td -- {name} {name}-* 2>/dev/null | grep -vxF -- '{current}' | \
+         tail -n +{first_removed} | \
+         while IFS= read -r superseded; do rm -f -- \"$superseded\"; done\n"
+    )
+}
+
+/// Returns the shell command to remove the current remote-server binary,
+/// along with the [`fallback_remote_server_binary`] the client may have run
+/// instead.
 ///
 /// The global bundled resources directory is deliberately left in place:
 /// the next install overwrites it, and an older daemon that is still
 /// running parsed its skills at startup.
 pub fn remote_server_removal_command() -> String {
-    format!("rm -f {}", remote_server_binary())
+    match fallback_remote_server_binary() {
+        Some(fallback) => format!("rm -f {} {fallback}", remote_server_binary()),
+        None => format!("rm -f {}", remote_server_binary()),
+    }
 }
 
 /// Returns the version string used to pin remote-server installs on
@@ -564,27 +651,20 @@ const INSTALL_SCRIPT_TEMPLATE: &str = include_str!("install_remote_server.sh");
 /// The script detects the remote architecture via `uname -m`, downloads
 /// the correct Oz CLI tarball from the download URL, and installs it at
 /// the path returned by [`remote_server_binary`] so repeat invocations
-/// are idempotent. The `version_query` / `version_suffix` substitutions
-/// follow the same rule as [`remote_server_binary`]: empty on
-/// [`Channel::Local`] and [`Channel::Oss`] (so the install lands at
-/// the unversioned path used by `script/deploy_remote_server`); pinned to
-/// `&version={v}` / `-{v}` on every other channel, where `v` falls back
-/// to `CARGO_PKG_VERSION` when no release tag is baked in.
+/// are idempotent. The `version_suffix` substitution is the one
+/// [`remote_server_binary`] uses. The `version_query` substitution is
+/// empty on [`Channel::Local`] and [`Channel::Oss`], which have no
+/// release-pinned artifact, and `&version={v}` on every other channel,
+/// where `v` falls back to `CARGO_PKG_VERSION` when no release tag is
+/// baked in.
 pub fn install_script(staging_tarball_path: Option<&str>) -> String {
-    let (vq, version_suffix) = match ChannelState::channel() {
-        Channel::Local | Channel::Oss => (String::new(), String::new()),
-        Channel::Stable | Channel::Preview | Channel::Dev | Channel::Integration => {
-            let v = pinned_version();
-            (format!("&version={v}"), format!("-{v}"))
-        }
-    };
     INSTALL_SCRIPT_TEMPLATE
         .replace("{download_base_url}", &download_url())
         .replace("{channel}", download_channel())
         .replace("{install_dir}", &remote_server_dir())
         .replace("{binary_name}", binary_name())
-        .replace("{version_query}", &vq)
-        .replace("{version_suffix}", &version_suffix)
+        .replace("{version_query}", &version_query())
+        .replace("{version_suffix}", &binary_version_suffix())
         .replace("{bundled_resources_dir_name}", BUNDLED_RESOURCES_DIR_NAME)
         .replace(
             "{no_http_client_exit_code}",
