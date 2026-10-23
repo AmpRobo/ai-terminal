@@ -23947,6 +23947,16 @@ impl Workspace {
                 .set
                 .insert(flags::SHOW_TERMINAL_INPUT_MESSAGE_LINE_FLAG);
         }
+        if input_settings.is_local_input_classification_hint_enabled() {
+            context
+                .set
+                .insert(flags::SHOW_LOCAL_INPUT_CLASSIFICATION_FLAG);
+        }
+        if input_settings.is_local_input_classification_log_enabled() {
+            context
+                .set
+                .insert(flags::LOG_LOCAL_INPUT_CLASSIFICATION_FLAG);
+        }
 
         if *input_settings.enable_slash_commands_in_terminal.value() {
             context.set.insert(flags::SLASH_COMMANDS_IN_TERMINAL_FLAG);

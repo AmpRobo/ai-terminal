@@ -25,6 +25,8 @@ pub fn initialize_settings_for_tests_with_mode(
 ) {
     use ai_terminal_core::execution_mode::AppExecutionMode;
     use ai_terminal_core::semantic_selection::SemanticSelection;
+    use ai_terminal_ui::SingletonEntity as _;
+    use settings::Setting as _;
 
     use crate::ai::cloud_agent_settings::CloudAgentSettings;
     use crate::drive::settings::AiTerminalDriveSettings;
@@ -88,6 +90,18 @@ pub fn initialize_settings_for_tests_with_mode(
     GPUSettings::register(app);
     InputModeSettings::register(app);
     InputSettings::register(app);
+    // Local input classification runs the classifier on edits and appends submitted inputs to a
+    // file in the real state directory, so unit tests opt into it explicitly.
+    InputSettings::handle(app).update(app, |input_settings, ctx| {
+        input_settings
+            .show_local_input_classification
+            .set_value(false, ctx)
+            .expect("set value must succeed");
+        input_settings
+            .log_local_input_classification
+            .set_value(false, ctx)
+            .expect("set value must succeed");
+    });
     KeysSettings::register(app);
     LigatureSettings::register(app);
     if ai_terminal_core::features::FeatureFlag::AiTerminalControlCli.is_enabled() {

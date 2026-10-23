@@ -467,20 +467,28 @@ pub async fn add_window_with_bootstrapped_terminal_and_window_id(
     history_file_commands: Option<Vec<String>>,
     session_info: Option<SessionInfo>,
 ) -> (WindowId, ViewHandle<TerminalView>) {
-    let tips_model = app.add_model(|_| TipsCompleted::default());
-
     let shell_starter_source =
         ShellStarter::init(crate::terminal::available_shells::AvailableShell::default())
             .expect("Could not create a shell starter source or wsl name")
             .to_shell_starter_source()
             .await
             .expect("Could not create a shell starter source");
-    let shell_type = shell_starter_source.shell_type();
-
     let session_info = session_info
         .unwrap_or_else(SessionInfo::new_for_test)
-        .with_session_type(BootstrapSessionType::Local)
-        .with_shell_type(shell_type);
+        .with_shell_type(shell_starter_source.shell_type());
+    add_window_with_bootstrapped_session(app, history_file_commands, session_info).await
+}
+
+/// Like [`add_window_with_bootstrapped_terminal_and_window_id`], but bootstraps `session_info`
+/// with its own shell type rather than the system default shell's.
+async fn add_window_with_bootstrapped_session(
+    app: &mut App,
+    history_file_commands: Option<Vec<String>>,
+    session_info: SessionInfo,
+) -> (WindowId, ViewHandle<TerminalView>) {
+    let tips_model = app.add_model(|_| TipsCompleted::default());
+
+    let session_info = session_info.with_session_type(BootstrapSessionType::Local);
     let history_file_commands = history_file_commands.unwrap_or_default();
 
     let (window_id, terminal) = app.add_window(WindowStyle::NotStealFocus, move |ctx| {
@@ -3538,10 +3546,10 @@ fn test_histignorespace_support_in_zsh() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
 
-        let terminal = add_window_with_bootstrapped_terminal(
+        let (_, terminal) = add_window_with_bootstrapped_session(
             &mut app,
             None, /* history_file_commands */
-            Some(session_info),
+            session_info,
         )
         .await;
 

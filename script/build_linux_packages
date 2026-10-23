@@ -44,7 +44,9 @@ Options:
                         Comma-separated x86_64 and/or aarch64 SSH extensions to
                         package (default: --arch). Include the architecture of
                         every remote host you SSH into.
-  --features FEATURES   Extra Cargo features, appended to the channel set
+  --features FEATURES   Extra Cargo features, appended to the channel set. The GUI
+                        build always includes nld_classifier_v3 (the bundled
+                        bert_tiny_v3 input classifier) and nld_heuristic_v2.
   --install-system-deps Install apt build and packaging packages (uses sudo)
   -h, --help            Show this help
 EOF

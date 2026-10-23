@@ -220,6 +220,27 @@ define_settings_group!(InputSettings,
             toml_path: "terminal.input.show_terminal_input_message_bar",
             description: "Whether the terminal input message bar is shown.",
         },
+        show_local_input_classification: ShowLocalInputClassification {
+            type: bool,
+            default: true,
+            supported_platforms: SupportedPlatforms::DESKTOP,
+            sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+            surface: settings::SettingSurfaces::GUI,
+            private: false,
+            toml_path: "terminal.input.show_local_input_classification",
+            description: "Whether the local input classifier's prediction is shown in the terminal input message bar.",
+        },
+        // Never synced because enabling it records the text of every submitted input on the device.
+        log_local_input_classification: LogLocalInputClassification {
+            type: bool,
+            default: true,
+            supported_platforms: SupportedPlatforms::DESKTOP,
+            sync_to_cloud: SyncToCloud::Never,
+            surface: settings::SettingSurfaces::GUI,
+            private: false,
+            toml_path: "terminal.input.log_local_input_classification",
+            description: "Whether submitted inputs and their local classifier predictions are appended to a local file.",
+        },
         // Per-menu custom content heights set by drag-to-resize. Not user-visible.
         inline_menu_custom_content_heights: InlineMenuCustomContentHeights {
             type: HashMap<InlineMenuType, f32>,
@@ -277,5 +298,13 @@ impl InputSettings {
 
     pub fn is_terminal_input_message_bar_enabled(&self) -> bool {
         *self.show_terminal_input_message_bar
+    }
+
+    pub fn is_local_input_classification_hint_enabled(&self) -> bool {
+        *self.show_local_input_classification
+    }
+
+    pub fn is_local_input_classification_log_enabled(&self) -> bool {
+        *self.log_local_input_classification
     }
 }

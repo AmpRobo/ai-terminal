@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use ai_terminal_completer::completer::SuggestionTypeName;
 use ai_terminal_ui::App;
 use ai_terminal_ui::text_layout::TextStyle;
@@ -25,7 +27,10 @@ fn test_decorations_with_multibyte_chars() {
             .to_ansi_color(&terminal_colors_normal)
             .into();
 
-        let session_info = SessionInfo::new_for_test();
+        // Bash only lists executable files as external commands, so `echo` is recognized through
+        // the builtins that a real session reports while bootstrapping.
+        let session_info =
+            SessionInfo::new_for_test().with_builtins(HashSet::from(["echo".into()]));
         let session_id = session_info.session_id;
 
         let terminal =

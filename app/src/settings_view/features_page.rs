@@ -70,14 +70,15 @@ use crate::settings::{
     CommandCorrections, CompletionsOpenWhileTyping, CopyOnSelect, CtrlTabBehavior,
     DEFAULT_QUAKE_MODE_SIZE_PERCENTAGES, DefaultSessionMode, EnableSlashCommandsInTerminal,
     ErrorUnderliningEnabled, ExtraMetaKeys, GPUSettings, GlobalHotkeyMode, InputSettings,
-    InputSettingsChangedEvent, LinuxSelectionClipboard, MiddleClickPasteEnabled,
-    MouseScrollMultiplier, NativeShellCompletionsEnabled, OutlineCodebaseSymbolsForAtContextMenu,
-    PreferLowPowerGPU, PreferredGraphicsBackend, QUAKE_WINDOW_AUTOHIDE_SUPPORTED,
-    QuakeModeSettings, RightClickBehavior, RightClickBehaviorSetting, ScrollSettings,
-    ScrollSettingsChangedEvent, SelectionSettings, SelectionSettingsChangedEvent,
-    ShowAutosuggestionIgnoreButton, ShowChangelogAfterUpdate, ShowTerminalInputMessageBar,
-    SshSettings, SyntaxHighlighting, TabBehavior, UserNativeRedirectPreference, VimModeEnabled,
-    VimStatusBar, VimUnnamedSystemClipboard,
+    InputSettingsChangedEvent, LinuxSelectionClipboard, LogLocalInputClassification,
+    MiddleClickPasteEnabled, MouseScrollMultiplier, NativeShellCompletionsEnabled,
+    OutlineCodebaseSymbolsForAtContextMenu, PreferLowPowerGPU, PreferredGraphicsBackend,
+    QUAKE_WINDOW_AUTOHIDE_SUPPORTED, QuakeModeSettings, RightClickBehavior,
+    RightClickBehaviorSetting, ScrollSettings, ScrollSettingsChangedEvent, SelectionSettings,
+    SelectionSettingsChangedEvent, ShowAutosuggestionIgnoreButton, ShowChangelogAfterUpdate,
+    ShowLocalInputClassification, ShowTerminalInputMessageBar, SshSettings, SyntaxHighlighting,
+    TabBehavior, UserNativeRedirectPreference, VimModeEnabled, VimStatusBar,
+    VimUnnamedSystemClipboard,
 };
 use crate::terminal::alt_screen_reporting::{
     AltScreenReporting, FocusReportingEnabled, MouseReportingEnabled, ScrollReportingEnabled,
@@ -87,6 +88,7 @@ use crate::terminal::general_settings::{
     ShowWarningBeforeQuitting,
 };
 use crate::terminal::input::OPEN_COMPLETIONS_KEYBINDING_NAME;
+use crate::terminal::input::local_classification::samples_file_path;
 use crate::terminal::keys_settings::{
     ActivationHotkeyEnabled, CtrlTabBehaviorSetting, KeysSettings, KeysSettingsChangedEvent,
 };
@@ -611,6 +613,37 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
     );
     toggle_binding_pairs.push(
         ToggleSettingActionPair::new(
+            "local input classification hint",
+            builder(SettingsAction::FeaturesPageToggle(
+                FeaturesPageAction::ToggleShowLocalInputClassification,
+            )),
+            context,
+            flags::SHOW_LOCAL_INPUT_CLASSIFICATION_FLAG,
+        )
+        .with_enabled(|| FeatureFlag::AgentView.is_enabled())
+        .is_supported_on_current_platform(
+            InputSettings::as_ref(app)
+                .show_local_input_classification
+                .is_supported_on_current_platform(),
+        ),
+    );
+    toggle_binding_pairs.push(
+        ToggleSettingActionPair::new(
+            "local input classification recording",
+            builder(SettingsAction::FeaturesPageToggle(
+                FeaturesPageAction::ToggleLogLocalInputClassification,
+            )),
+            context,
+            flags::LOG_LOCAL_INPUT_CLASSIFICATION_FLAG,
+        )
+        .is_supported_on_current_platform(
+            InputSettings::as_ref(app)
+                .log_local_input_classification
+                .is_supported_on_current_platform(),
+        ),
+    );
+    toggle_binding_pairs.push(
+        ToggleSettingActionPair::new(
             "'@' context menu in terminal mode",
             builder(SettingsAction::FeaturesPageToggle(
                 FeaturesPageAction::ToggleAtContextMenuInTerminalMode,
@@ -830,6 +863,8 @@ pub enum FeaturesPageAction {
     ToggleOutlineCodebaseSymbolsForAtContextMenu,
     ToggleAutoOpenCodeReviewPane,
     ToggleShowTerminalInputMessageLine,
+    ToggleShowLocalInputClassification,
+    ToggleLogLocalInputClassification,
     TogglePreserveInputFocusOnBlockSelection,
     ToggleAgentInAppNotifications,
     MakeAiTerminalDefaultTerminal,
@@ -1015,6 +1050,20 @@ impl FeaturesPageAction {
                 TelemetryEvent::FeaturesPageAction {
                     action: "ToggleShowTerminalInputMessageLine".to_string(),
                     value: to_string(settings.is_terminal_input_message_bar_enabled()),
+                }
+            }
+            Self::ToggleShowLocalInputClassification => {
+                let settings = InputSettings::as_ref(ctx);
+                TelemetryEvent::FeaturesPageAction {
+                    action: "ToggleShowLocalInputClassification".to_string(),
+                    value: to_string(settings.is_local_input_classification_hint_enabled()),
+                }
+            }
+            Self::ToggleLogLocalInputClassification => {
+                let settings = InputSettings::as_ref(ctx);
+                TelemetryEvent::FeaturesPageAction {
+                    action: "ToggleLogLocalInputClassification".to_string(),
+                    value: to_string(settings.is_local_input_classification_log_enabled()),
                 }
             }
             Self::ActivationKeybindEditorClicked => TelemetryEvent::FeaturesPageAction {
@@ -1938,6 +1987,24 @@ impl TypedActionView for FeaturesPageView {
                     report_if_error!(
                         input_settings
                             .show_terminal_input_message_bar
+                            .toggle_and_save_value(ctx)
+                    );
+                });
+            }
+            ToggleShowLocalInputClassification => {
+                InputSettings::handle(ctx).update(ctx, |input_settings, ctx| {
+                    report_if_error!(
+                        input_settings
+                            .show_local_input_classification
+                            .toggle_and_save_value(ctx)
+                    );
+                });
+            }
+            ToggleLogLocalInputClassification => {
+                InputSettings::handle(ctx).update(ctx, |input_settings, ctx| {
+                    report_if_error!(
+                        input_settings
+                            .log_local_input_classification
                             .toggle_and_save_value(ctx)
                     );
                 });
@@ -3006,6 +3073,19 @@ impl FeaturesPageView {
 
         if FeatureFlag::AgentView.is_enabled() {
             editor_widgets.push(Box::new(ShowTerminalInputMessageLineWidget::default()));
+            if input_settings
+                .show_local_input_classification
+                .is_supported_on_current_platform()
+            {
+                editor_widgets.push(Box::new(ShowLocalInputClassificationWidget::default()));
+            }
+        }
+
+        if input_settings
+            .log_local_input_classification
+            .is_supported_on_current_platform()
+        {
+            editor_widgets.push(Box::new(LogLocalInputClassificationWidget::default()));
         }
 
         editor_widgets.push(Box::new(TabKeyBehaviorWidget::default()));
@@ -6605,6 +6685,110 @@ impl SettingsWidget for ShowTerminalInputMessageLineWidget {
                 })
                 .finish(),
             None,
+        )
+    }
+}
+
+#[derive(Default)]
+struct ShowLocalInputClassificationWidget {
+    switch_state: SwitchStateHandle,
+}
+
+impl SettingsWidget for ShowLocalInputClassificationWidget {
+    type View = FeaturesPageView;
+
+    fn search_terms(&self) -> &str {
+        "local input classification classifier model natural language detection hint message line"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let ui_builder = appearance.ui_builder();
+        render_body_item::<FeaturesPageAction>(
+            "Show local input classification".into(),
+            None,
+            LocalOnlyIconState::for_setting(
+                ShowLocalInputClassification::storage_key(),
+                ShowLocalInputClassification::sync_to_cloud(),
+                &mut view
+                    .button_mouse_states
+                    .local_only_icon_tooltip_states
+                    .borrow_mut(),
+                app,
+            ),
+            ToggleState::Enabled,
+            appearance,
+            ui_builder
+                .switch(self.switch_state.clone())
+                .check(InputSettings::as_ref(app).is_local_input_classification_hint_enabled())
+                .build()
+                .on_click(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(
+                        FeaturesPageAction::ToggleShowLocalInputClassification,
+                    );
+                })
+                .finish(),
+            Some(
+                "Shows the on-device model's natural language vs. shell command prediction in \
+                 the terminal input message line. Works without AI."
+                    .into(),
+            ),
+        )
+    }
+}
+
+#[derive(Default)]
+struct LogLocalInputClassificationWidget {
+    switch_state: SwitchStateHandle,
+}
+
+impl SettingsWidget for LogLocalInputClassificationWidget {
+    type View = FeaturesPageView;
+
+    fn search_terms(&self) -> &str {
+        "local input classification classifier model record log samples training data"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let ui_builder = appearance.ui_builder();
+        render_body_item::<FeaturesPageAction>(
+            "Record local input classifications".into(),
+            None,
+            LocalOnlyIconState::for_setting(
+                LogLocalInputClassification::storage_key(),
+                LogLocalInputClassification::sync_to_cloud(),
+                &mut view
+                    .button_mouse_states
+                    .local_only_icon_tooltip_states
+                    .borrow_mut(),
+                app,
+            ),
+            ToggleState::Enabled,
+            appearance,
+            ui_builder
+                .switch(self.switch_state.clone())
+                .check(InputSettings::as_ref(app).is_local_input_classification_log_enabled())
+                .build()
+                .on_click(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(
+                        FeaturesPageAction::ToggleLogLocalInputClassification,
+                    );
+                })
+                .finish(),
+            Some(format!(
+                "Appends the text of each submitted input and the on-device model's prediction \
+                 to {}.",
+                samples_file_path().display()
+            )),
         )
     }
 }

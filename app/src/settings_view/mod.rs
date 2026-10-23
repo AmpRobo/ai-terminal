@@ -596,6 +596,8 @@ pub mod flags {
     pub const LRC_SUBMISSION_QUEUE_UNTIL_COMMAND_COMPLETES: &str =
         "LRC_Submission_Queue_Until_Command_Completes";
     pub const SHOW_TERMINAL_INPUT_MESSAGE_LINE_FLAG: &str = "Show_Terminal_Input_Message_Line";
+    pub const SHOW_LOCAL_INPUT_CLASSIFICATION_FLAG: &str = "Show_Local_Input_Classification";
+    pub const LOG_LOCAL_INPUT_CLASSIFICATION_FLAG: &str = "Log_Local_Input_Classification";
     pub const PRESERVE_INPUT_FOCUS_ON_BLOCK_SELECTION_FLAG: &str =
         "Preserve_Input_Focus_On_Block_Selection";
     pub const SLASH_COMMANDS_IN_TERMINAL_FLAG: &str = "Slash_Commands_In_Terminal";

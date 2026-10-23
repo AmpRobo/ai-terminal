@@ -11,6 +11,9 @@ use parking_lot::FairMutex;
 use pathfinder_color::ColorU;
 
 use super::buffer_model::InputBufferModel;
+use super::local_classification::{
+    LocalInputClassification, LocalInputClassificationModel, PLACEHOLDER_HINT_TEXT,
+};
 use super::message_bar::common::render_terminal_message;
 use super::message_bar::{Message, MessageItem, MessageProvider, truncated_command_for_block};
 use crate::ai::blocklist::{
@@ -21,6 +24,7 @@ use crate::ai::pricing_promotion::{
 };
 use crate::appearance::Appearance;
 use crate::search::slash_command_menu::static_commands::commands;
+use crate::settings::{AISettings, InputSettings};
 use crate::terminal::input::SET_INPUT_MODE_TERMINAL_ACTION_NAME;
 use crate::terminal::input::inline_history::{AcceptHistoryItem, HistoryTab};
 use crate::terminal::input::inline_menu::{InlineMenuModel, InlineMenuModelEvent};
@@ -41,6 +45,7 @@ pub struct TerminalInputMessageBar {
     context_model: ModelHandle<BlocklistAIContextModel>,
     suggestions_mode_model: ModelHandle<InputSuggestionsModeModel>,
     inline_history_model: ModelHandle<InlineMenuModel<AcceptHistoryItem, HistoryTab>>,
+    local_classification_model: ModelHandle<LocalInputClassificationModel>,
     promotion_close_mouse_state: MouseStateHandle,
 }
 
@@ -53,6 +58,7 @@ pub enum TerminalInputMessageBarAction {
 }
 
 impl TerminalInputMessageBar {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         terminal_model: Arc<FairMutex<TerminalModel>>,
         ai_input_model: ModelHandle<BlocklistAIInputModel>,
@@ -60,9 +66,13 @@ impl TerminalInputMessageBar {
         context_model: ModelHandle<BlocklistAIContextModel>,
         suggestions_mode_model: ModelHandle<InputSuggestionsModeModel>,
         inline_history_model: ModelHandle<InlineMenuModel<AcceptHistoryItem, HistoryTab>>,
+        local_classification_model: ModelHandle<LocalInputClassificationModel>,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
         ctx.subscribe_to_model(&ai_input_model, |_, _, _, ctx| {
+            ctx.notify();
+        });
+        ctx.subscribe_to_model(&local_classification_model, |_, _, _, ctx| {
             ctx.notify();
         });
         ctx.subscribe_to_model(&input_buffer_model, |_, _, _, ctx| {
@@ -94,6 +104,7 @@ impl TerminalInputMessageBar {
             context_model,
             suggestions_mode_model,
             inline_history_model,
+            local_classification_model,
             promotion_close_mouse_state: MouseStateHandle::default(),
         }
     }
@@ -125,27 +136,39 @@ impl View for TerminalInputMessageBar {
         let context_model = self.context_model.as_ref(app);
         let input_model = self.ai_input_model.as_ref(app);
 
+        let local_classification = self
+            .local_classification_model
+            .as_ref(app)
+            .latest_classification();
+
         let args = TerminalMessageArgs {
             current_input: current_buffer,
             terminal_model: &terminal_model,
             context_model,
             input_model,
+            local_classification,
             app,
             promotion_close_mouse_state: &self.promotion_close_mouse_state,
         };
 
-        let mut message = ErroredBlockMessageProducer
-            .produce_message(args)
-            .or_else(|| AgentMessageProducer.produce_message(args))
-            .or_else(|| PlanMessageProducer.produce_message(args))
-            .or_else(|| ContinueConversationMessageProducer.produce_message(args))
-            .or_else(|| DefaultMessageProducer.produce_message(args))
-            .unwrap_or_default();
+        // Every producer advertises an agent feature, so they only apply when AI is available.
+        let mut message = if AISettings::as_ref(app).is_any_ai_enabled(app) {
+            ErroredBlockMessageProducer
+                .produce_message(args)
+                .or_else(|| AgentMessageProducer.produce_message(args))
+                .or_else(|| PlanMessageProducer.produce_message(args))
+                .or_else(|| ContinueConversationMessageProducer.produce_message(args))
+                .or_else(|| DefaultMessageProducer.produce_message(args))
+                .unwrap_or_default()
+        } else {
+            Message::default()
+        };
 
-        let transformers: [Box<dyn MessageTransformer<TerminalMessageArgs<'_>>>; 3] = [
+        let transformers: [Box<dyn MessageTransformer<TerminalMessageArgs<'_>>>; 4] = [
             Box::new(AttachedBlocksMessageTransformer),
             Box::new(AttachedTextSelectionMessageTransformer),
             Box::new(AutodetectedPromptMessageTransformer),
+            Box::new(LocalInputClassificationMessageTransformer),
         ];
 
         for transformer in transformers {
@@ -165,6 +188,7 @@ pub struct TerminalMessageArgs<'a> {
     terminal_model: &'a TerminalModel,
     context_model: &'a BlocklistAIContextModel,
     input_model: &'a BlocklistAIInputModel,
+    local_classification: Option<&'a LocalInputClassification>,
     app: &'a AppContext,
     promotion_close_mouse_state: &'a MouseStateHandle,
 }
@@ -455,6 +479,34 @@ impl MessageTransformer<TerminalMessageArgs<'_>> for AutodetectedPromptMessageTr
             ]);
         }
         message.set_color(message_magenta(Appearance::as_ref(args.app).theme()));
+        true
+    }
+}
+
+struct LocalInputClassificationMessageTransformer;
+impl MessageTransformer<TerminalMessageArgs<'_>> for LocalInputClassificationMessageTransformer {
+    fn transform_message(&self, message: &mut Message, args: TerminalMessageArgs<'_>) -> bool {
+        let Some(classification) = args.local_classification else {
+            // Without AI the hint is often the only content, so the placeholder keeps the input
+            // from shifting as the hint appears and disappears.
+            if message.items.is_empty()
+                && InputSettings::as_ref(args.app).is_local_input_classification_hint_enabled()
+            {
+                *message = Message::from_text(PLACEHOLDER_HINT_TEXT);
+                return true;
+            }
+            return false;
+        };
+
+        let hint_text = classification.hint_text();
+        if message.items.is_empty() {
+            *message = Message::from_text(hint_text);
+            if classification.is_natural_language() {
+                message.set_color(message_magenta(Appearance::as_ref(args.app).theme()));
+            }
+        } else {
+            message.append_text(&format!(" · {hint_text}"));
+        }
         true
     }
 }

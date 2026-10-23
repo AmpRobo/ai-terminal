@@ -65,6 +65,10 @@ ICON_FILES=( $(find "$STAGE_DIR/usr/share/icons" -name "*.png") )
 # Make sure there's no lingering AppDir from a previous execution.
 rm -rf "$APP_DIR"
 
+# Overwriting the previous AppImage in place fails with "Text file busy" while it is running, so
+# unlink it instead; the running copy keeps working.
+rm -f "$OUT_DIR/$APPIMAGE_NAME"
+
 # Run linuxdeploy to create an appropriately-structured AppDir and turn it into
 # an AppImage, located in OUT_DIR.
 #

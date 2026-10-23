@@ -9,6 +9,7 @@ pub mod decorations;
 pub(crate) mod handoff_compose;
 pub mod inline_history;
 pub mod inline_menu;
+pub mod local_classification;
 pub mod message_bar;
 pub mod models;
 pub mod plans;
@@ -298,6 +299,7 @@ use crate::terminal::input::conversations::{
 };
 use crate::terminal::input::inline_history::InlineHistoryMenuView;
 use crate::terminal::input::inline_menu::InlineMenuPositioner;
+use crate::terminal::input::local_classification::LocalInputClassificationModel;
 use crate::terminal::input::models::{
     InlineModelSelectorEvent, InlineModelSelectorTab, InlineModelSelectorView,
 };
@@ -1839,6 +1841,7 @@ pub struct Input {
     universal_developer_input_button_bar: ViewHandle<UniversalDeveloperInputButtonBar>,
 
     terminal_input_message_bar: ViewHandle<TerminalInputMessageBar>,
+    local_classification_model: ModelHandle<LocalInputClassificationModel>,
 
     agent_input_footer: ViewHandle<AgentInputFooter>,
     prompt_suggestions_view: ViewHandle<PromptSuggestionsView>,
@@ -3451,6 +3454,8 @@ impl Input {
             None
         };
 
+        let local_classification_model =
+            ctx.add_model(|ctx| LocalInputClassificationModel::new(buffer_model.clone(), ctx));
         let terminal_input_message_bar = ctx.add_typed_action_view(|ctx| {
             TerminalInputMessageBar::new(
                 model.clone(),
@@ -3459,6 +3464,7 @@ impl Input {
                 ai_context_model.clone(),
                 suggestions_mode_model.clone(),
                 inline_history_model,
+                local_classification_model.clone(),
                 ctx,
             )
         });
@@ -4177,6 +4183,7 @@ impl Input {
             menu_positioning_provider,
             universal_developer_input_button_bar,
             terminal_input_message_bar,
+            local_classification_model,
             prompt_render_helper,
             prompt_type: current_prompt,
             ai_controller,
@@ -14263,6 +14270,9 @@ impl Input {
                 return;
             }
 
+            self.local_classification_model.update(ctx, |model, ctx| {
+                model.record_submission(command, InputType::AI, ctx);
+            });
             self.submit_ai_query_with_routing(None, ctx);
         } else {
             if FeatureFlag::WorkflowAliases.is_enabled() {
@@ -14299,11 +14309,14 @@ impl Input {
                 }
             }
 
-            let command = self.get_command(ctx);
-            if !self.try_execute_command(&command, ctx) {
+            let expanded_command = self.get_command(ctx);
+            if !self.try_execute_command(&expanded_command, ctx) {
                 return;
             }
             self.emit_input_buffer_submitted_telemetry(ctx);
+            self.local_classification_model.update(ctx, |model, ctx| {
+                model.record_submission(command, InputType::Shell, ctx);
+            });
 
             if FeatureFlag::AgentMode.is_enabled()
                 && AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx)
